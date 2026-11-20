@@ -1,15 +1,17 @@
 {
-    "display_name": "Plugin Template for OBS",
+    "display_name": "Griddy",
     "id": "00000000-0000-0000-0000-000000000000",
     "version": "1.0.0",
-    "authors": ["Your Name"],
-    "name": "plugintemplate-for-obs",
-    "description": "A plugin template to build plugins from.",
-    "long_description": "A template plugin for OBS Studio that can be used as a starting point for developing new plugins.",
+    "authors": [
+        "Voidscape Development"
+    ],
+    "name": "griddy",
+    "description": "One-click source layouts for OBS Studio.",
+    "long_description": "Arrange scene sources into podcast, eSports and custom grid layouts with a dock and a visual layout editor.",
     "urls": {
-        "repository": "<URL TO YOUR REPOSITORY>",
-        "website": "<URL TO YOUR WEBSITE>",
-        "support": "<URL TO YOUR SUPPORT PAGE>"
+        "repository": "https://github.com/voidscape-development/griddy",
+        "website": "https://github.com/voidscape-development/griddy",
+        "support": "https://github.com/voidscape-development/griddy"
     },
     "has_banner": false,
     "has_icon": false
