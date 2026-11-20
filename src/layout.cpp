@@ -195,24 +195,41 @@ Layout Layout::fromJson(const QJsonObject &o)
 
 QVector<Layout> builtinLayouts()
 {
-	const double A = 16.0 / 9;
 	auto g = [](const char *n, QVector<double> c, QVector<double> r, QVector<Slot> s, int gap = 20) {
 		Layout L;
 		L.name = n, L.cols = c, L.rows = r, L.slots = s, L.gap = gap;
 		return L;
 	};
-	auto s = [&](double x, double y, double w = 1, double h = 1, double a = 16.0 / 9) {
+	auto f = [&](const char *n, QVector<Slot> s, int gap = 20) { // free-mode layout
+		Layout L = g(n, {1}, {1}, s, gap);
+		L.grid = false;
+		return L;
+	};
+	auto s = [](double x, double y, double w = 1, double h = 1, double a = 16.0 / 9) {
 		return Slot{QRectF(x, y, w, h), FitCrop, a};
 	};
-	Layout pip = g("Picture in Picture", {1}, {1}, {s(0, 0), s(0.72, 0.7, 0.25, 0.25, A)}, 0);
-	pip.grid = false;
+	QVector<Slot> grid3x3, lShape{s(0, 0, 2, 2)};
+	for (int i = 0; i < 9; i++)
+		grid3x3 += s(i % 3, i / 3);
+	for (QPoint p : {QPoint(2, 0), QPoint(2, 1), QPoint(2, 2), QPoint(1, 2), QPoint(0, 2)})
+		lShape += s(p.x(), p.y());
 	return {
 		g("Side by Side", {1, 1}, {1}, {s(0, 0), s(1, 0)}),
 		g("Three Across", {1, 1, 1}, {1}, {s(0, 0), s(1, 0), s(2, 0)}),
 		g("2x2 Grid", {1, 1}, {1, 1}, {s(0, 0), s(1, 0), s(0, 1), s(1, 1)}),
+		g("3x3 Grid", {1, 1, 1}, {1, 1, 1}, grid3x3),
 		g("Main + Stacked", {2, 1}, {1, 1}, {s(0, 0, 1, 2), s(1, 0), s(1, 1)}),
+		g("Main + Side Column", {3, 1}, {1, 1, 1}, {s(0, 0, 1, 3), s(1, 0), s(1, 1), s(1, 2)}),
+		g("Main + Bottom Strip", {1, 1, 1}, {3, 1}, {s(0, 0, 3, 1), s(0, 1), s(1, 1), s(2, 1)}),
 		g("Main + Flanking", {1, 3, 1}, {1}, {s(1, 0), s(0, 0, 1, 1, 0), s(2, 0, 1, 1, 0)}),
-		pip,
+		g("L-Shape (1 + 5)", {1, 1, 1}, {1, 1, 1}, lShape),
+		g("Screen + Facecam", {3, 1}, {1}, {s(0, 0), s(1, 0, 1, 1, 0)}),
+		g("Talk Show", {1, 1.4, 1}, {1}, {s(1, 0), s(0, 0, 1, 1, 0), s(2, 0, 1, 1, 0)}),
+		g("Versus", {1, 1, 1, 1}, {2, 1}, {s(0, 0, 2, 1), s(2, 0, 2, 1), s(0, 1), s(3, 1)}),
+		f("Interview", {s(0, 0, 0.65, 1), s(0.65, 0, 0.35, 1)}),
+		f("Picture in Picture", {s(0, 0), s(0.72, 0.7, 0.25, 0.25)}, 0),
+		f("Two Corner PiP", {s(0, 0), s(0.03, 0.7, 0.25, 0.25), s(0.72, 0.7, 0.25, 0.25)}, 0),
+		g("Vertical: Game + Cam", {1}, {1, 1}, {s(0, 0), s(0, 1, 1, 1, 0)}),
 	};
 }
 

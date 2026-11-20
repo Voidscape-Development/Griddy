@@ -9,7 +9,11 @@ One-click source layouts for OBS Studio. Podcasts, eSports, and custom grids are
   - **Pick & apply:** with nothing selected, choose a source for each slot and press **Apply**.
   - **Rotate** moves each source to the next slot. This is handy for swapping who's main.
   - Each layout has its own settings: **Gap**, **Margin**, **Main size %**, **Aspect lock** and **Mirror** (flip left/right).
-- **Built-in presets:** Side by Side, Three Across, 2x2 Grid, Main + Stacked, Main + Flanking, Picture in Picture.
+- **Built-in presets:**
+  - *Podcast / panels:* Side by Side, Three Across, 2x2 Grid, 3x3 Grid, Interview, Talk Show
+  - *eSports / gaming:* Main + Stacked, Main + Side Column, Main + Bottom Strip, Main + Flanking, L-Shape (1 + 5), Versus
+  - *Overlays:* Picture in Picture, Two Corner PiP, Screen + Facecam
+  - *Portrait canvas:* Vertical: Game + Cam
 - **Layout editor** (Tools → Griddy Layout Editor, or **Edit Layouts…** in the dock):
   - **Grid mode:** set column and row weights (e.g. `2, 1`). Click a cell to add a slot, or drag across cells to merge them into one slot.
   - **Free mode:** draw slots anywhere, drag to move them, and drag a corner to resize. Snaps to a 1/48 grid.
