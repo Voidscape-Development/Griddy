@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <plugin-support.h>
+#include <util/config-file.h>
 #include <functional>
 #include <numeric>
 
@@ -29,19 +30,37 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
 static std::function<void()> g_layoutsChanged; // editor -> dock
 
+static QString g_canvasName; // target canvas (e.g. a Vertical Canvas), empty = main
+
+static obs_canvas_t *targetCanvas()
+{
+	obs_canvas_t *c = g_canvasName.isEmpty() ? nullptr : obs_get_canvas_by_name(g_canvasName.toUtf8().constData());
+	return c ? c : obs_get_main_canvas();
+}
+
 static QSizeF canvasSize()
 {
+	obs_canvas_t *c = targetCanvas();
 	obs_video_info o;
-	return obs_get_video_info(&o) ? QSizeF(o.base_width, o.base_height) : QSizeF(1920, 1080);
+	const bool ok = obs_canvas_get_flags(c) & MAIN ? obs_get_video_info(&o) : obs_canvas_get_video_info(c, &o);
+	obs_canvas_release(c);
+	return ok ? QSizeF(o.base_width, o.base_height) : QSizeF(1920, 1080);
+}
+
+// Size a layout is drawn on: the target canvas, turned if the layout is made for the other orientation.
+static QSizeF layoutSize(const Layout &L)
+{
+	const QSizeF c = canvasSize();
+	return L.fits(c.width(), c.height()) ? c : c.transposed();
 }
 
 // Maps canvas pixels into a widget area, keeping the canvas aspect ratio.
 struct View {
 	QRectF canvas;
+	QSizeF size;
 	double s;
-	explicit View(const QRectF &area)
+	View(const QRectF &area, const QSizeF &c) : size(c)
 	{
-		const QSizeF c = canvasSize();
 		canvas = QRectF(QPointF(), c.scaled(area.size(), Qt::KeepAspectRatio));
 		canvas.moveCenter(area.center());
 		s = canvas.width() / c.width();
@@ -51,7 +70,23 @@ struct View {
 
 static QVector<QRectF> computeOnCanvas(const Layout &L)
 {
-	return L.compute(canvasSize().width(), canvasSize().height());
+	const QSizeF c = layoutSize(L);
+	return L.compute(c.width(), c.height());
+}
+
+// Shades the parts of the canvas covered by the platform's UI.
+static void drawSafeZone(QPainter &p, const View &v, const Layout &L)
+{
+	if (L.safeZone <= 0)
+		return;
+	const QRectF safe = v.map(L.safeRect(v.size.width(), v.size.height()));
+	QPainterPath path;
+	path.addRect(v.canvas);
+	path.addRect(safe);
+	p.fillPath(path, QColor(255, 60, 60, 70));
+	p.setPen(QPen(QColor(255, 110, 110), 1, Qt::DotLine));
+	p.setBrush(Qt::NoBrush);
+	p.drawRect(safe);
 }
 
 static void drawSlots(QPainter &p, const View &v, const QVector<QRectF> &rects, int sel = -1, bool outline = false)
@@ -82,13 +117,15 @@ static void drawSlots(QPainter &p, const View &v, const QVector<QRectF> &rects, 
 
 static QIcon layoutIcon(const Layout &L)
 {
-	QPixmap pm(128, 72);
+	const QSizeF c = layoutSize(L);
+	QPixmap pm(c.scaled(128, 128, Qt::KeepAspectRatio).toSize());
 	pm.fill(Qt::transparent);
 	{
 		QPainter p(&pm);
-		const View v(pm.rect());
+		const View v(pm.rect(), c);
 		p.fillRect(v.canvas, QColor(30, 30, 36));
 		drawSlots(p, v, computeOnCanvas(L));
+		drawSafeZone(p, v, L);
 	}
 	return pm;
 }
@@ -121,22 +158,23 @@ private:
 	QRectF orig;
 	bool moved = false;
 
-	// Editing works on the plain layout; aspect-locked results are drawn dashed on top.
+	View view() const { return View(rect(), layoutSize(*L)); }
+	// Editing works on the plain layout; aspect-locked / safe-zone results are drawn dashed on top.
 	Layout base() const
 	{
 		Layout b = *L;
-		b.aspectLock = b.mirror = false;
+		b.aspectLock = b.mirror = b.safeFit = false;
 		return b;
 	}
 	QRectF content() const
 	{
-		const View v(rect());
+		const View v = view();
 		const double m = L->margin * v.s;
 		return v.canvas.adjusted(m, m, -m, -m);
 	}
 	QVector<QRectF> shown() const
 	{
-		const View v(rect());
+		const View v = view();
 		QVector<QRectF> out;
 		for (const auto &r : computeOnCanvas(base()))
 			out += v.map(r);
@@ -188,7 +226,7 @@ private:
 		QPainter p(this);
 		if (!L)
 			return;
-		const View v(rect());
+		const View v = view();
 		p.fillRect(v.canvas, QColor(30, 30, 36));
 		if (L->grid) {
 			const QRectF c = content();
@@ -202,11 +240,12 @@ private:
 			p.drawRect(c);
 		}
 		drawSlots(p, v, computeOnCanvas(base()), sel);
-		if (L->aspectLock) {
+		if (L->aspectLock || L->safeFit) {
 			Layout f = *L;
 			f.mirror = false;
 			drawSlots(p, v, computeOnCanvas(f), -1, true);
 		}
+		drawSafeZone(p, v, *L);
 		if (mode == Cells && moved) {
 			p.setPen(QPen(Qt::white, 2));
 			p.setBrush(QColor(255, 255, 255, 50));
@@ -323,13 +362,24 @@ static QSpinBox *spin(int max, const QString &suffix = " px")
 	return s;
 }
 
+static QComboBox *safeZoneBox()
+{
+	auto *c = new QComboBox;
+	for (const auto &z : kSafeZones)
+		c->addItem(z.name);
+	c->setToolTip("Shade the area covered by the app's buttons and captions (approximate)");
+	return c;
+}
+
 class EditorDialog : public QDialog {
 	QListWidget *list = new QListWidget;
 	LayoutCanvas *canvas = new LayoutCanvas;
 	QLineEdit *name = new QLineEdit, *cols = new QLineEdit, *rows = new QLineEdit;
-	QComboBox *mode = new QComboBox, *fit = new QComboBox, *aspect = new QComboBox;
+	QComboBox *mode = new QComboBox, *orient = new QComboBox, *safe = safeZoneBox(), *fit = new QComboBox,
+		  *aspect = new QComboBox;
 	QSpinBox *gap = spin(400), *margin = spin(800), *order = spin(1, "");
-	QCheckBox *lock = new QCheckBox("Aspect lock"), *mirror = new QCheckBox("Mirror (flip left/right)");
+	QCheckBox *lock = new QCheckBox("Aspect lock"), *mirror = new QCheckBox("Mirror (flip left/right)"),
+		  *safeFit = new QCheckBox("Keep slots inside safe zone");
 	QGroupBox *layoutBox = new QGroupBox("Layout"), *slotBox = new QGroupBox("Selected slot");
 	bool loading = false;
 
@@ -341,8 +391,10 @@ class EditorDialog : public QDialog {
 	void commit()
 	{
 		saveLayouts();
-		if (auto *it = list->currentItem(); it && cur())
+		if (auto *it = list->currentItem(); it && cur()) {
 			it->setText(cur()->name);
+			it->setIcon(layoutIcon(*cur()));
+		}
 		canvas->update();
 		if (g_layoutsChanged)
 			g_layoutsChanged();
@@ -382,6 +434,9 @@ class EditorDialog : public QDialog {
 			margin->setValue(L->margin);
 			lock->setChecked(L->aspectLock);
 			mirror->setChecked(L->mirror);
+			orient->setCurrentIndex(L->orient);
+			safe->setCurrentIndex(L->safeZone);
+			safeFit->setChecked(L->safeFit);
 		}
 		loading = false;
 		loadSlot();
@@ -407,9 +462,11 @@ public:
 	explicit EditorDialog(QWidget *parent) : QDialog(parent)
 	{
 		setWindowTitle("Griddy Layout Editor");
-		list->setIconSize(QSize(64, 36));
-		resize(1100, 560);
+		list->setIconSize(QSize(64, 64));
+		resize(1100, 620);
 		mode->addItems({"Grid", "Free"});
+		orient->addItems({"Any", "Landscape", "Portrait"});
+		orient->setToolTip("The Griddy dock only lists layouts that match the target canvas");
 		fit->addItems({"Crop to fill", "Fit inside", "Stretch"});
 		for (const auto &[n, a] : kAspects)
 			aspect->addItem(n, a);
@@ -419,12 +476,15 @@ public:
 		auto *lf = new QFormLayout(layoutBox);
 		lf->addRow("Name", name);
 		lf->addRow("Mode", mode);
+		lf->addRow("Orientation", orient);
 		lf->addRow("Column weights", cols);
 		lf->addRow("Row weights", rows);
 		lf->addRow("Gap", gap);
 		lf->addRow("Margin", margin);
 		lf->addRow(lock);
 		lf->addRow(mirror);
+		lf->addRow("Safe zone", safe);
+		lf->addRow(safeFit);
 
 		auto *del = new QPushButton("Remove slot");
 		auto *sf = new QFormLayout(slotBox);
@@ -487,6 +547,12 @@ public:
 		connect(margin, &QSpinBox::valueChanged, this, edit([this](Layout &L) { L.margin = margin->value(); }));
 		connect(lock, &QCheckBox::toggled, this, edit([this](Layout &L) { L.aspectLock = lock->isChecked(); }));
 		connect(mirror, &QCheckBox::toggled, this, edit([this](Layout &L) { L.mirror = mirror->isChecked(); }));
+		connect(orient, &QComboBox::currentIndexChanged, this,
+			edit([this](Layout &L) { L.orient = orient->currentIndex(); }));
+		connect(safe, &QComboBox::currentIndexChanged, this,
+			edit([this](Layout &L) { L.safeZone = safe->currentIndex(); }));
+		connect(safeFit, &QCheckBox::toggled, this,
+			edit([this](Layout &L) { L.safeFit = safeFit->isChecked(); }));
 		connect(fit, &QComboBox::currentIndexChanged, this,
 			editSlot([this](Layout &, Slot &s) { s.fit = fit->currentIndex(); }));
 		connect(aspect, &QComboBox::currentIndexChanged, this,
@@ -566,10 +632,25 @@ struct ItemInfo {
 	bool selected;
 };
 
+// Main canvas: preview scene in Studio Mode, else program. Other canvases: the scene on output channel 0.
 static obs_source_t *targetScene()
 {
-	return obs_frontend_preview_program_mode_active() ? obs_frontend_get_current_preview_scene()
-							  : obs_frontend_get_current_scene();
+	obs_canvas_t *c = targetCanvas();
+	obs_source_t *s = nullptr;
+	if (obs_canvas_get_flags(c) & MAIN) {
+		s = obs_frontend_preview_program_mode_active() ? obs_frontend_get_current_preview_scene()
+							       : obs_frontend_get_current_scene();
+	} else if ((s = obs_canvas_get_channel(c, 0)) && obs_source_get_type(s) == OBS_SOURCE_TYPE_TRANSITION) {
+		obs_source_t *t = s;
+		s = obs_transition_get_active_source(t);
+		obs_source_release(t);
+	}
+	obs_canvas_release(c);
+	if (s && !obs_scene_from_source(s)) {
+		obs_source_release(s);
+		s = nullptr;
+	}
+	return s;
 }
 
 // Top-level items of the target scene, top of the source list first.
@@ -593,8 +674,10 @@ static QVector<ItemInfo> sceneItems()
 
 class GriddyDock : public QWidget {
 	QListWidget *list = new QListWidget;
+	QComboBox *canvasBox = new QComboBox, *safe = safeZoneBox();
 	QSpinBox *gap = spin(400), *margin = spin(800), *pct = spin(95, " %");
-	QCheckBox *lock = new QCheckBox("Aspect lock"), *mirror = new QCheckBox("Mirror");
+	QCheckBox *lock = new QCheckBox("Aspect lock"), *mirror = new QCheckBox("Mirror"),
+		  *safeFit = new QCheckBox("Keep inside");
 	QFormLayout *slotForm = new QFormLayout;
 	QVector<QComboBox *> pickers;
 	QLabel *status = new QLabel;
@@ -627,6 +710,8 @@ class GriddyDock : public QWidget {
 			pct->setValue(std::max(0, L->mainPct()));
 			lock->setChecked(L->aspectLock);
 			mirror->setChecked(L->mirror);
+			safe->setCurrentIndex(L->safeZone);
+			safeFit->setChecked(L->safeFit);
 		}
 		loading = false;
 	}
@@ -643,6 +728,9 @@ public:
 		pct->setRange(5, 95);
 		status->setWordWrap(true);
 
+		canvasBox->setToolTip("Canvas to arrange, e.g. a Vertical Canvas. Only matching layouts are listed.");
+		safeFit->setToolTip("Keep slots out of the area covered by the app's UI");
+
 		auto *params = new QFormLayout;
 		params->addRow("Gap", gap);
 		params->addRow("Margin", margin);
@@ -651,6 +739,10 @@ public:
 		checks->addWidget(lock);
 		checks->addWidget(mirror);
 		params->addRow(checks);
+		auto *safeRow = new QHBoxLayout;
+		safeRow->addWidget(safe, 1);
+		safeRow->addWidget(safeFit);
+		params->addRow("Safe zone", safeRow);
 
 		auto *slots = new QGroupBox("Slots");
 		slots->setLayout(slotForm);
@@ -666,7 +758,10 @@ public:
 		btns->addWidget(refresh, 1, 0);
 		btns->addWidget(editBtn, 1, 1);
 
+		auto *top = new QFormLayout;
+		top->addRow("Canvas", canvasBox);
 		auto *root = new QVBoxLayout(this);
+		root->addLayout(top);
 		root->addWidget(list, 1);
 		root->addLayout(params);
 		root->addWidget(slots);
@@ -694,8 +789,21 @@ public:
 		connect(pct, &QSpinBox::valueChanged, this, edit([this](Layout &L) { L.setMainPct(pct->value()); }));
 		connect(lock, &QCheckBox::toggled, this, edit([this](Layout &L) { L.aspectLock = lock->isChecked(); }));
 		connect(mirror, &QCheckBox::toggled, this, edit([this](Layout &L) { L.mirror = mirror->isChecked(); }));
+		connect(safe, &QComboBox::currentIndexChanged, this,
+			edit([this](Layout &L) { L.safeZone = safe->currentIndex(); }));
+		connect(safeFit, &QCheckBox::toggled, this,
+			edit([this](Layout &L) { L.safeFit = safeFit->isChecked(); }));
+		connect(canvasBox, &QComboBox::currentIndexChanged, this, [this] {
+			g_canvasName = canvasBox->currentData().toString();
+			config_set_string(obs_frontend_get_user_config(), "Griddy", "Canvas",
+					  g_canvasName.toUtf8().constData());
+			refreshList();
+		});
 		connect(apply, &QPushButton::clicked, this, [this] { applyLayout(); });
-		connect(refresh, &QPushButton::clicked, this, [this] { refreshPickers(); });
+		connect(refresh, &QPushButton::clicked, this, [this] {
+			refreshCanvases();
+			refreshPickers();
+		});
 		connect(editBtn, &QPushButton::clicked, this, [this] { openEditor(list->currentRow()); });
 		connect(rotate, &QPushButton::clicked, this, [this] {
 			QVector<qint64> ids;
@@ -709,19 +817,45 @@ public:
 			applyLayout();
 		});
 
-		refreshList();
+		g_canvasName = QString::fromUtf8(config_get_string(obs_frontend_get_user_config(), "Griddy", "Canvas"));
+		refreshCanvases();
 	}
 
 	static void openEditor(int row);
 
+	// Main canvas plus extra canvases from plugins such as Vertical Canvas. A saved canvas that isn't
+	// loaded yet stays the target; until it appears, lookups fall back to the main canvas.
+	void refreshCanvases()
+	{
+		const QSignalBlocker block(canvasBox);
+		canvasBox->clear();
+		canvasBox->addItem("Main", QString());
+		obs_frontend_canvas_list l = {};
+		obs_frontend_get_canvases(&l);
+		for (size_t i = 0; i < l.canvases.num; i++)
+			if (!(obs_canvas_get_flags(l.canvases.array[i]) & MAIN))
+				canvasBox->addItem(obs_canvas_get_name(l.canvases.array[i]),
+						   QString(obs_canvas_get_name(l.canvases.array[i])));
+		obs_frontend_canvas_list_free(&l);
+		canvasBox->setCurrentIndex(std::max(0, canvasBox->findData(g_canvasName)));
+		refreshList();
+	}
+
+	// Lists the layouts, hiding those made for the other orientation than the target canvas.
 	void refreshList()
 	{
-		const int row = std::max(0, list->currentRow());
+		int row = std::max(0, list->currentRow());
+		const QSizeF c = canvasSize();
 		const QSignalBlocker block(list);
 		list->clear();
-		for (const auto &L : layouts())
+		list->setIconSize(c.scaled(96, 96, Qt::KeepAspectRatio).toSize());
+		for (const auto &L : layouts()) {
 			list->addItem(new QListWidgetItem(layoutIcon(L), L.name));
-		list->setCurrentRow(std::min(row, int(layouts().size()) - 1));
+			list->item(list->count() - 1)->setHidden(!L.fits(c.width(), c.height()));
+		}
+		for (int i = 0; i < list->count() && (row >= list->count() || list->item(row)->isHidden()); i++)
+			row = i;
+		list->setCurrentRow(std::min(row, list->count() - 1));
 		loadControls();
 		refreshPickers();
 	}
@@ -757,7 +891,9 @@ public:
 	{
 		const Layout *L = cur();
 		obs_source_t *src = targetScene();
-		if (!L || !src)
+		if (!src)
+			return status->setText("No active scene on the target canvas.");
+		if (!L)
 			return obs_source_release(src);
 		obs_scene_t *scene = obs_scene_from_source(src);
 		const auto rects = computeOnCanvas(*L);
@@ -821,6 +957,9 @@ static void onFrontendEvent(enum obs_frontend_event e, void *)
 		return;
 	if (e == OBS_FRONTEND_EVENT_PROFILE_CHANGED)
 		g_dock->refreshList();
+	else if (e == OBS_FRONTEND_EVENT_CANVAS_ADDED || e == OBS_FRONTEND_EVENT_CANVAS_REMOVED ||
+		 e == OBS_FRONTEND_EVENT_FINISHED_LOADING)
+		g_dock->refreshCanvases();
 	else if (e == OBS_FRONTEND_EVENT_SCENE_CHANGED || e == OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED ||
 		 e == OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED || e == OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED ||
 		 e == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED || e == OBS_FRONTEND_EVENT_FINISHED_LOADING)

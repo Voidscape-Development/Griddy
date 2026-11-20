@@ -15,8 +15,29 @@ static double sum(const QVector<double> &v, int a = 0, int n = -1)
 	return s;
 }
 
+// Approximate areas covered by each app's buttons and captions on a 9:16 frame.
+const QVector<SafeZone> kSafeZones = {{"Off", 0, 0, 0, 0},
+				      {"TikTok", 0.06, 0.08, 0.13, 0.20},
+				      {"YouTube Shorts", 0.05, 0.08, 0.12, 0.22},
+				      {"Instagram Reels", 0.05, 0.11, 0.12, 0.22}};
+
+QRectF Layout::safeRect(double W, double H) const
+{
+	const SafeZone z = kSafeZones.value(safeZone, kSafeZones[0]);
+	return QRectF(QPointF(z.l * W, z.t * H), QPointF((1 - z.r) * W, (1 - z.b) * H));
+}
+
 QVector<QRectF> Layout::compute(double W, double H) const
 {
+	if (safeFit && safeZone > 0) { // lay out inside the safe area instead of the full canvas
+		Layout t = *this;
+		t.safeFit = false;
+		const QRectF a = safeRect(W, H);
+		auto out = t.compute(a.width(), a.height());
+		for (auto &p : out)
+			p.translate(a.topLeft());
+		return out;
+	}
 	QVector<QRectF> out;
 	const double cw = W - 2 * margin, ch = H - 2 * margin;
 	if (cw <= 0 || ch <= 0)
@@ -117,7 +138,7 @@ void Layout::toFree()
 {
 	Layout t = *this;
 	t.gap = t.margin = 0;
-	t.aspectLock = t.mirror = false;
+	t.aspectLock = t.mirror = t.safeFit = false;
 	const auto rs = t.compute(1, 1);
 	for (int i = 0; i < slots.size(); i++)
 		slots[i].r = rs[i];
@@ -169,9 +190,9 @@ QJsonObject Layout::toJson() const
 	for (const Slot &x : slots)
 		s += QJsonObject{{"x", x.r.x()},      {"y", x.r.y()}, {"w", x.r.width()},
 				 {"h", x.r.height()}, {"fit", x.fit}, {"aspect", x.aspect}};
-	return {{"name", name}, {"grid", grid},     {"cols", toArray(cols)},    {"rows", toArray(rows)},
-		{"gap", gap},   {"margin", margin}, {"aspectLock", aspectLock}, {"mirror", mirror},
-		{"slots", s}};
+	return {{"name", name},     {"grid", grid},         {"cols", toArray(cols)},    {"rows", toArray(rows)},
+		{"gap", gap},       {"margin", margin},     {"aspectLock", aspectLock}, {"mirror", mirror},
+		{"orient", orient}, {"safeZone", safeZone}, {"safeFit", safeFit},       {"slots", s}};
 }
 
 Layout Layout::fromJson(const QJsonObject &o)
@@ -185,6 +206,9 @@ Layout Layout::fromJson(const QJsonObject &o)
 	L.margin = o["margin"].toInt(0);
 	L.aspectLock = o["aspectLock"].toBool(true);
 	L.mirror = o["mirror"].toBool(false);
+	L.orient = qBound(0, o["orient"].toInt(), 2);
+	L.safeZone = qBound(0, o["safeZone"].toInt(), int(kSafeZones.size()) - 1);
+	L.safeFit = o["safeFit"].toBool(false);
 	for (const QJsonValue v : o["slots"].toArray()) {
 		const auto j = v.toObject();
 		L.slots += {QRectF(j["x"].toDouble(), j["y"].toDouble(), j["w"].toDouble(), j["h"].toDouble()),
@@ -213,7 +237,7 @@ QVector<Layout> builtinLayouts()
 		grid3x3 += s(i % 3, i / 3);
 	for (QPoint p : {QPoint(2, 0), QPoint(2, 1), QPoint(2, 2), QPoint(1, 2), QPoint(0, 2)})
 		lShape += s(p.x(), p.y());
-	return {
+	QVector<Layout> v{
 		g("Side by Side", {1, 1}, {1}, {s(0, 0), s(1, 0)}),
 		g("Three Across", {1, 1, 1}, {1}, {s(0, 0), s(1, 0), s(2, 0)}),
 		g("2x2 Grid", {1, 1}, {1, 1}, {s(0, 0), s(1, 0), s(0, 1), s(1, 1)}),
@@ -230,8 +254,16 @@ QVector<Layout> builtinLayouts()
 		f("Interview", {s(0, 0, 0.65, 1), s(0.65, 0, 0.35, 1)}),
 		f("Picture in Picture", {s(0, 0), s(0.72, 0.7, 0.25, 0.25)}, 0),
 		f("Two Corner PiP", {s(0, 0), s(0.03, 0.7, 0.25, 0.25), s(0.72, 0.7, 0.25, 0.25)}, 0),
-		g("Vertical: Game + Cam", {1}, {1, 1}, {s(0, 0), s(0, 1, 1, 1, 0)}),
+		g("Vertical: Game + Cam", {1}, {1, 2}, {s(0, 0), s(0, 1, 1, 1, 0)}),
+		g("Vertical: Game + 2 Cams", {1}, {1, 1, 1}, {s(0, 0), s(0, 1, 1, 1, 0), s(0, 2, 1, 1, 0)}),
+		g("Vertical: Cropped Game + Cam", {1}, {3, 2}, {s(0, 0, 1, 1, 0), s(0, 1, 1, 1, 0)}),
+		g("Vertical: Three Stacked", {1}, {1, 1, 1}, {s(0, 0), s(0, 1), s(0, 2)}),
+		g("Vertical: Top / Bottom Split", {1}, {1, 1}, {s(0, 0, 1, 1, 0), s(0, 1, 1, 1, 0)}),
+		f("Vertical: Cam + Game PiP", {s(0, 0, 1, 1, 0), s(0.05, 0.06, 0.9, 0.3)}, 0),
 	};
+	for (auto &L : v)
+		L.orient = L.name.startsWith("Vertical") ? Portrait : Landscape;
+	return v;
 }
 
 static QString configPath()
