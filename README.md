@@ -11,7 +11,7 @@ One-click source layouts for OBS Studio. Podcasts, eSports, and custom grids are
   - Each layout has its own settings: **Gap**, **Margin**, **Main size %**, **Aspect lock** and **Mirror** (flip left/right).
 - **Built-in presets:**
   - *Podcast / panels:* Side by Side, Three Across, 2x2 Grid, 3x3 Grid, Interview, Talk Show
-  - *eSports / gaming:* Main + Stacked, Main + Side Column, Main + Bottom Strip, Main + Flanking, L-Shape (1 + 5), Versus
+  - *eSports / gaming:* Main + Stacked, Main + Side Column (3 and 4 cams), Main + Bottom Strip, Main + Flanking, L-Shape (1 + 5), Versus
   - *Overlays:* Picture in Picture, Two Corner PiP, Screen + Facecam
   - *Portrait canvas:* Vertical: Game + Cam
 - **Layout editor** (Tools → Griddy Layout Editor, or **Edit Layouts…** in the dock):
