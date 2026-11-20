@@ -145,9 +145,9 @@ private:
 	int slotAt(QPointF p) const
 	{
 		const auto s = shown();
-		for (int i = s.size() - 1; i >= 0; i--)
+		for (auto i = s.size() - 1; i >= 0; i--)
 			if (s[i].contains(p))
-				return i;
+				return int(i);
 		return -1;
 	}
 	QPointF norm(QPointF p) const
@@ -232,7 +232,7 @@ private:
 			mode = New;
 			start = norm(press);
 			L->slots += Slot{QRectF(start, start), FitCrop, 0};
-			select(L->slots.size() - 1);
+			select(int(L->slots.size()) - 1);
 		}
 	}
 
@@ -263,11 +263,11 @@ private:
 		if (mode == Cells && (moved || sel < 0)) {
 			// Click on an empty cell adds a slot; dragging merges the cells, replacing what it covers
 			const QRect span = QRect(cellA, cellB).normalized();
-			for (int i = s.size() - 1; i >= 0; i--)
+			for (auto i = s.size() - 1; i >= 0; i--)
 				if (s[i].r.toRect().intersects(span))
 					s.removeAt(i);
 			s += Slot{QRectF(span), FitCrop, 0};
-			select(s.size() - 1);
+			select(int(s.size()) - 1);
 			dirty = true;
 		} else if (mode == Cells) {
 			dirty = false;
@@ -396,7 +396,7 @@ class EditorDialog : public QDialog {
 		if (ok) {
 			fit->setCurrentIndex(L->slots[i].fit);
 			aspect->setCurrentIndex(std::max(0, aspect->findData(L->slots[i].aspect)));
-			order->setRange(1, L->slots.size());
+			order->setRange(1, int(L->slots.size()));
 			order->setValue(i + 1);
 		}
 		loading = false;
@@ -505,14 +505,14 @@ public:
 			L.name = "New Layout";
 			L.cols = {1, 1};
 			layouts() += L;
-			reload(layouts().size() - 1);
+			reload(int(layouts().size()) - 1);
 		});
 		connect(b[1], &QPushButton::clicked, this, [this] {
 			if (Layout *L = cur()) {
 				Layout copy = *L;
 				copy.name += " (copy)";
 				layouts() += copy;
-				reload(layouts().size() - 1);
+				reload(int(layouts().size()) - 1);
 			}
 		});
 		connect(b[2], &QPushButton::clicked, this, [this] {
@@ -528,7 +528,7 @@ public:
 			const auto imported = readLayoutFile(f);
 			layouts() += imported;
 			if (!imported.isEmpty())
-				reload(layouts().size() - 1);
+				reload(int(layouts().size()) - 1);
 		});
 		connect(b[4], &QPushButton::clicked, this, [this] {
 			const QString f = QFileDialog::getSaveFileName(this, "Export Layouts", "griddy-layouts.json",

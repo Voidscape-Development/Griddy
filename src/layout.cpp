@@ -22,7 +22,7 @@ QVector<QRectF> Layout::compute(double W, double H) const
 	if (cw <= 0 || ch <= 0)
 		return out;
 	if (grid) {
-		const int nc = cols.size(), nr = rows.size();
+		const int nc = int(cols.size()), nr = int(rows.size());
 		const double aw = cw - (nc - 1) * gap, ah = ch - (nr - 1) * gap;
 		QVector<double> c = cols, r = rows;
 		for (auto &x : c)
@@ -38,7 +38,7 @@ QVector<QRectF> Layout::compute(double W, double H) const
 		};
 		if (aspectLock) {
 			// Column weights set widths; locked slots resize their rows. Later slots first so the main slot wins.
-			for (int k = slots.size() - 1; k >= 0; k--) {
+			for (auto k = slots.size() - 1; k >= 0; k--) {
 				const QRect q = slots[k].r.toRect();
 				if (slots[k].aspect <= 0 || !ok(q))
 					continue;
@@ -157,7 +157,7 @@ static QJsonArray toArray(const QVector<double> &v)
 static QVector<double> toWeights(const QJsonValue &j)
 {
 	QVector<double> v;
-	for (const auto &x : j.toArray())
+	for (const QJsonValue x : j.toArray())
 		if (x.toDouble() > 0)
 			v += x.toDouble();
 	return v.isEmpty() ? QVector<double>{1} : v;
@@ -185,7 +185,7 @@ Layout Layout::fromJson(const QJsonObject &o)
 	L.margin = o["margin"].toInt(0);
 	L.aspectLock = o["aspectLock"].toBool(true);
 	L.mirror = o["mirror"].toBool(false);
-	for (const auto &v : o["slots"].toArray()) {
+	for (const QJsonValue v : o["slots"].toArray()) {
 		const auto j = v.toObject();
 		L.slots += {QRectF(j["x"].toDouble(), j["y"].toDouble(), j["w"].toDouble(), j["h"].toDouble()),
 			    qBound(0, j["fit"].toInt(), 2), j["aspect"].toDouble()};
@@ -247,7 +247,7 @@ QVector<Layout> readLayoutFile(const QString &path)
 	QVector<Layout> v;
 	QFile f(path);
 	if (f.open(QIODevice::ReadOnly))
-		for (const auto &x : QJsonDocument::fromJson(f.readAll()).array())
+		for (const QJsonValue x : QJsonDocument::fromJson(f.readAll()).array())
 			v += Layout::fromJson(x.toObject());
 	return v;
 }
