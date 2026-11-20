@@ -1,59 +1,36 @@
-# OBS Plugin Template
+# Griddy
 
-## Introduction
+One-click source layouts for OBS Studio. Podcasts, eSports, and custom grids are applied in a couple of clicks.
 
-The plugin template is meant to be used as a starting point for OBS Studio plugin development. It includes:
+## Features
 
-* Boilerplate plugin source code
-* A CMake project file
-* GitHub Actions workflows and repository actions
+- **Griddy dock** (Docks → Griddy): a visual list of layouts.
+  - **One click:** select sources in OBS (top of the Sources list = slot 1), then click a layout.
+  - **Pick & apply:** with nothing selected, choose a source for each slot and press **Apply**.
+  - **Rotate** moves each source to the next slot. This is handy for swapping who's main.
+  - Each layout has its own settings: **Gap**, **Margin**, **Main size %**, **Aspect lock** and **Mirror** (flip left/right).
+- **Built-in presets:** Side by Side, Three Across, 2x2 Grid, Main + Stacked, Main + Flanking, Picture in Picture.
+- **Layout editor** (Tools → Griddy Layout Editor, or **Edit Layouts…** in the dock):
+  - **Grid mode:** set column and row weights (e.g. `2, 1`). Click a cell to add a slot, or drag across cells to merge them into one slot.
+  - **Free mode:** draw slots anywhere, drag to move them, and drag a corner to resize. Snaps to a 1/48 grid.
+  - **Per-slot options:** fit mode (crop to fill, fit inside, stretch), locked aspect ratio, and slot order.
+  - Import/export layouts as JSON, or reset them to the built-in presets.
+- Applying a layout is **one-shot and undoable** (Ctrl+Z). It sets the item's position and bounding box, so the items stay normal OBS sources you can tweak afterwards. Existing crops are kept.
+- In Studio Mode, layouts apply to the preview scene.
 
-## Supported Build Environments
+### How aspect lock works
 
-| Platform  | Tool   |
-|-----------|--------|
-| Windows   | Visual Studio 17 2022 |
-| macOS     | XCode 16.0 |
-| Windows, macOS  | CMake 3.30.5 |
-| Ubuntu 24.04 | CMake 3.28.3 |
-| Ubuntu 24.04 | `ninja-build` |
-| Ubuntu 24.04 | `pkg-config`
-| Ubuntu 24.04 | `build-essential` |
+Slot 1 is the main slot. In grid mode, column weights set the widths, and a locked slot sets the height of its rows. The whole group is then shrunk if needed and centered on the canvas. For example, **Main + Stacked** gives a 16:9 game with two cams stacked beside it at the same total height. In free mode, a locked slot is fitted inside its rectangle.
 
-## Quick Start
+Layouts are stored globally in `plugin_config/griddy/layouts.json`, in the OBS config folder.
 
-An absolute bare-bones [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide) is available in the wiki.
+## Building
 
-## Documentation
+Griddy is based on the [OBS plugin template](https://github.com/obsproject/obs-plugintemplate) and needs Qt 6 and the obs-frontend-api. See the template wiki for [build system requirements](https://github.com/obsproject/obs-plugintemplate/wiki/Build-System-Requirements).
 
-All documentation can be found in the [Plugin Template Wiki](https://github.com/obsproject/obs-plugintemplate/wiki).
+```sh
+cmake --preset ubuntu-x86_64   # or macos / windows-x64
+cmake --build --preset ubuntu-x86_64
+```
 
-Suggested reading to get up and running:
-
-* [Getting started](https://github.com/obsproject/obs-plugintemplate/wiki/Getting-Started)
-* [Build system requirements](https://github.com/obsproject/obs-plugintemplate/wiki/Build-System-Requirements)
-* [Build system options](https://github.com/obsproject/obs-plugintemplate/wiki/CMake-Build-System-Options)
-
-## GitHub Actions & CI
-
-Default GitHub Actions workflows are available for the following repository actions:
-
-* `push`: Run for commits or tags pushed to `master` or `main` branches.
-* `pr-pull`: Run when a Pull Request has been pushed or synchronized.
-* `dispatch`: Run when triggered by the workflow dispatch in GitHub's user interface.
-* `build-project`: Builds the actual project and is triggered by other workflows.
-* `check-format`: Checks CMake and plugin source code formatting and is triggered by other workflows.
-
-The workflows make use of GitHub repository actions (contained in `.github/actions`) and build scripts (contained in `.github/scripts`) which are not needed for local development, but might need to be adjusted if additional/different steps are required to build the plugin.
-
-### Retrieving build artifacts
-
-Successful builds on GitHub Actions will produce build artifacts that can be downloaded for testing. These artifacts are commonly simple archives and will not contain package installers or installation programs.
-
-### Building a Release
-
-To create a release, an appropriately named tag needs to be pushed to the `main`/`master` branch using semantic versioning (e.g., `12.3.4`, `23.4.5-beta2`). A draft release will be created on the associated repository with generated installer packages or installation programs attached as release artifacts.
-
-## Signing and Notarizing on macOS
-
-Basic concepts of codesigning and notarization on macOS are explained in the correspodning [Wiki article](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS) which has a specific section for the [GitHub Actions setup](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS#setting-up-code-signing-for-github-actions).
+CI (GitHub Actions) builds and packages Windows, macOS and Ubuntu.
