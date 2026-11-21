@@ -32,15 +32,15 @@ static std::function<void()> g_layoutsChanged; // editor -> dock
 
 static QString g_canvasName; // target canvas (e.g. a Vertical Canvas), empty = main
 
-static obs_canvas_t *targetCanvas()
+static obs_canvas_t *targetCanvas(const QString &name = g_canvasName)
 {
-	obs_canvas_t *c = g_canvasName.isEmpty() ? nullptr : obs_get_canvas_by_name(g_canvasName.toUtf8().constData());
+	obs_canvas_t *c = name.isEmpty() ? nullptr : obs_get_canvas_by_name(name.toUtf8().constData());
 	return c ? c : obs_get_main_canvas();
 }
 
-static QSizeF canvasSize()
+static QSizeF canvasSize(const QString &name = g_canvasName)
 {
-	obs_canvas_t *c = targetCanvas();
+	obs_canvas_t *c = targetCanvas(name);
 	obs_video_info o;
 	const bool ok = obs_canvas_get_flags(c) & MAIN ? obs_get_video_info(&o) : obs_canvas_get_video_info(c, &o);
 	obs_canvas_release(c);
@@ -89,9 +89,12 @@ static void drawSafeZone(QPainter &p, const View &v, const Layout &L)
 	p.drawRect(safe);
 }
 
-static void drawSlots(QPainter &p, const View &v, const QVector<QRectF> &rects, int sel = -1, bool outline = false)
+static const QColor kColors[] = {0x4c8bf5, 0xf59e0b, 0x10b981, 0xec4899, 0x8b5cf6, 0x06b6d4}; // per slot
+
+// Slots numbered from 1; `labels` adds a second line (e.g. the source name) under each number.
+static void drawSlots(QPainter &p, const View &v, const QVector<QRectF> &rects, int sel = -1, bool outline = false,
+		      const QStringList &labels = {})
 {
-	static const QColor colors[] = {0x4c8bf5, 0xf59e0b, 0x10b981, 0xec4899, 0x8b5cf6, 0x06b6d4};
 	p.setRenderHint(QPainter::Antialiasing);
 	for (int i = 0; i < rects.size(); i++) {
 		const QRectF q = v.map(rects[i]);
@@ -101,17 +104,22 @@ static void drawSlots(QPainter &p, const View &v, const QVector<QRectF> &rects, 
 			p.drawRect(q);
 			continue;
 		}
-		QColor c = colors[i % 6];
+		QColor c = kColors[i % 6];
 		p.setPen(QPen(i == sel ? Qt::white : c.lighter(130), i == sel ? 2.5 : 1));
 		c.setAlpha(170);
 		p.setBrush(c);
 		p.drawRect(q);
+		const QString label = labels.value(i);
 		QFont f = p.font();
-		f.setPixelSize(qBound(8, int(q.height() * 0.35), 32));
+		f.setPixelSize(qBound(8, int(q.height() * (label.isEmpty() ? 0.35 : 0.16)), label.isEmpty() ? 32 : 14));
 		f.setBold(true);
 		p.setFont(f);
 		p.setPen(Qt::white);
-		p.drawText(q, Qt::AlignCenter, QString::number(i + 1));
+		p.drawText(q, Qt::AlignCenter,
+			   QString::number(i + 1) + (label.isEmpty()
+							     ? ""
+							     : "\n" + p.fontMetrics().elidedText(label, Qt::ElideRight,
+												 int(q.width()) - 4)));
 	}
 }
 
@@ -362,6 +370,32 @@ static QSpinBox *spin(int max, const QString &suffix = " px")
 	return s;
 }
 
+// Slider with a value readout; returns the row widget so the row can be hidden.
+static QWidget *sliderRow(QSlider *&s, int lo, int hi, const QString &suffix)
+{
+	auto *w = new QWidget;
+	auto *l = new QHBoxLayout(w);
+	auto *v = new QLabel(QString::number(lo) + suffix);
+	s = new QSlider(Qt::Horizontal);
+	s->setRange(lo, hi);
+	v->setMinimumWidth(v->fontMetrics().horizontalAdvance("800 px"));
+	v->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	QObject::connect(s, &QSlider::valueChanged, v, [v, suffix](int x) { v->setText(QString::number(x) + suffix); });
+	l->setContentsMargins({});
+	l->addWidget(s, 1);
+	l->addWidget(v);
+	return w;
+}
+
+static QToolButton *toggle(const QString &text, const QString &tip)
+{
+	auto *b = new QToolButton;
+	b->setText(text);
+	b->setToolTip(tip);
+	b->setCheckable(true);
+	return b;
+}
+
 static QComboBox *safeZoneBox()
 {
 	auto *c = new QComboBox;
@@ -371,21 +405,125 @@ static QComboBox *safeZoneBox()
 	return c;
 }
 
+// Row of exclusive toggle buttons. The group's idClicked fires on user clicks only.
+class Segmented : public QWidget {
+public:
+	QButtonGroup group;
+	explicit Segmented(const QStringList &items = {})
+	{
+		auto *l = new QHBoxLayout(this);
+		l->setContentsMargins({});
+		l->setSpacing(0);
+		setItems(items);
+	}
+	void setItems(const QStringList &items)
+	{
+		qDeleteAll(group.buttons());
+		for (int i = 0; i < items.size(); i++) {
+			auto *b = new QToolButton;
+			b->setText(items[i]);
+			b->setCheckable(true);
+			b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+			layout()->addWidget(b);
+			group.addButton(b, i);
+		}
+	}
+	int index() const { return group.checkedId(); }
+	void setIndex(int i)
+	{
+		if (auto *b = group.button(i))
+			b->setChecked(true);
+	}
+};
+
+/* ---------- Grouped layout list (dock gallery and editor list) ---------- */
+
+class LayoutList : public QListWidget {
+public:
+	QString filter;
+	std::function<bool(const Layout &)> show; // extra filter, e.g. the canvas orientation
+
+	int layoutAt(const QListWidgetItem *it) const
+	{
+		return it && it->data(Qt::UserRole).isValid() ? it->data(Qt::UserRole).toInt() : -1;
+	}
+	int current() const { return layoutAt(currentItem()); }
+	LayoutList() { setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); }
+	// Rebuilds the list under group headers and selects layout `sel`, or the first one shown.
+	void fill(int sel)
+	{
+		const QSignalBlocker block(this);
+		clear();
+		QStringList groups;
+		for (const auto &L : layouts())
+			if (!groups.contains(L.group))
+				groups += L.group;
+		QListWidgetItem *pick = nullptr;
+		for (const auto &g : groups) {
+			auto *h = new QListWidgetItem(g.toUpper(), this);
+			h->setFlags(Qt::NoItemFlags);
+			h->setTextAlignment(Qt::AlignLeft | Qt::AlignBottom);
+			QFont f = font();
+			f.setBold(true);
+			h->setFont(f);
+			bool any = false;
+			for (int i = 0; i < layouts().size(); i++) {
+				const Layout &L = layouts()[i];
+				if (L.group != g || !L.name.contains(filter, Qt::CaseInsensitive) || (show && !show(L)))
+					continue;
+				auto *it = new QListWidgetItem(layoutIcon(L), L.name, this);
+				it->setData(Qt::UserRole, i);
+				if (viewMode() == IconMode)
+					it->setSizeHint(iconSize() + QSize(12, 2 * fontMetrics().height() + 10));
+				if (!pick || i == sel)
+					pick = it;
+				any = true;
+			}
+			if (!any)
+				delete h;
+		}
+		fitHeaders();
+		setCurrentItem(pick);
+	}
+
+protected:
+	void resizeEvent(QResizeEvent *e) override
+	{
+		QListWidget::resizeEvent(e);
+		fitHeaders();
+	}
+
+private:
+	void fitHeaders() // headers span a whole row of the icon grid
+	{
+		for (int i = 0; viewMode() == IconMode && i < count(); i++)
+			if (layoutAt(item(i)) < 0)
+				item(i)->setSizeHint(
+					QSize(viewport()->width() - 2 * spacing() - 2, fontMetrics().height() + 10));
+	}
+};
+
 class EditorDialog : public QDialog {
-	QListWidget *list = new QListWidget;
+	LayoutList *list = new LayoutList;
 	LayoutCanvas *canvas = new LayoutCanvas;
-	QLineEdit *name = new QLineEdit, *cols = new QLineEdit, *rows = new QLineEdit;
-	QComboBox *mode = new QComboBox, *orient = new QComboBox, *safe = safeZoneBox(), *fit = new QComboBox,
-		  *aspect = new QComboBox;
-	QSpinBox *gap = spin(400), *margin = spin(800), *order = spin(1, "");
-	QCheckBox *lock = new QCheckBox("Aspect lock"), *mirror = new QCheckBox("Mirror (flip left/right)"),
-		  *safeFit = new QCheckBox("Keep slots inside safe zone");
-	QGroupBox *layoutBox = new QGroupBox("Layout"), *slotBox = new QGroupBox("Selected slot");
+	QLineEdit *name = new QLineEdit, *cols = new QLineEdit, *rows = new QLineEdit, *filter = new QLineEdit;
+	QComboBox *group = new QComboBox, *safe = safeZoneBox(), *aspect = new QComboBox;
+	Segmented *mode = new Segmented({"Grid", "Free"}), *orient = new Segmented({"Any", "Landscape", "Portrait"}),
+		  *fit = new Segmented({"Crop to fill", "Fit inside", "Stretch"});
+	QSlider *gap = nullptr, *margin = nullptr;
+	QSpinBox *order = spin(1, "");
+	QToolButton *lock = toggle("Aspect lock", "Keep each slot's locked aspect ratio"),
+		    *mirror = toggle("Mirror", "Flip the layout left/right");
+	QCheckBox *safeFit = new QCheckBox("Keep slots inside safe zone");
+	QTabWidget *tabs = new QTabWidget;
+	QWidget *bar = new QWidget, *layoutTab = new QWidget, *slotTab = new QWidget, *slotBox = new QWidget;
+	QLabel *help = new QLabel,
+	       *slotHint = new QLabel("Click a slot on the canvas to edit its fit, aspect and order.");
 	bool loading = false;
 
 	Layout *cur()
 	{
-		const int i = list->currentRow();
+		const int i = list->current();
 		return i >= 0 && i < layouts().size() ? &layouts()[i] : nullptr;
 	}
 	void commit()
@@ -422,10 +560,17 @@ class EditorDialog : public QDialog {
 		loading = true;
 		canvas->L = L;
 		canvas->sel = -1;
-		layoutBox->setEnabled(L);
+		bar->setEnabled(L);
+		layoutTab->setEnabled(L);
 		if (L) {
 			name->setText(L->name);
-			mode->setCurrentIndex(L->grid ? 0 : 1);
+			group->clear();
+			for (const auto &x : layouts())
+				if (group->findText(x.group) < 0)
+					group->addItem(x.group);
+			group->setCurrentText(L->group);
+			mode->setIndex(L->grid ? 0 : 1);
+			orient->setIndex(L->orient);
 			cols->setText(weightsText(L->cols));
 			rows->setText(weightsText(L->rows));
 			cols->setEnabled(L->grid);
@@ -434,25 +579,34 @@ class EditorDialog : public QDialog {
 			margin->setValue(L->margin);
 			lock->setChecked(L->aspectLock);
 			mirror->setChecked(L->mirror);
-			orient->setCurrentIndex(L->orient);
 			safe->setCurrentIndex(L->safeZone);
 			safeFit->setChecked(L->safeFit);
+			help->setText(
+				L->grid ? "Click a cell to add a slot  ·  Drag across cells to merge  ·  Del removes the "
+					  "selected slot  ·  Dashed outlines show the result with aspect lock"
+					: "Drag to draw a slot  ·  Drag a slot to move it  ·  Drag its corner to resize  "
+					  "·  Del removes the selected slot");
 		}
 		loading = false;
 		loadSlot();
+		tabs->setCurrentWidget(layoutTab);
 	}
 	void loadSlot()
 	{
 		Layout *L = cur();
 		const int i = canvas->sel;
 		const bool ok = L && i >= 0 && i < L->slots.size();
-		slotBox->setEnabled(ok);
+		slotBox->setVisible(ok);
+		slotHint->setVisible(!ok);
 		loading = true;
 		if (ok) {
-			fit->setCurrentIndex(L->slots[i].fit);
+			tabs->setTabText(1, QString("Slot %1").arg(i + 1));
+			fit->setIndex(L->slots[i].fit);
 			aspect->setCurrentIndex(std::max(0, aspect->findData(L->slots[i].aspect)));
 			order->setRange(1, int(L->slots.size()));
 			order->setValue(i + 1);
+		} else {
+			tabs->setTabText(1, "Slot");
 		}
 		loading = false;
 		canvas->update();
@@ -462,77 +616,129 @@ public:
 	explicit EditorDialog(QWidget *parent) : QDialog(parent)
 	{
 		setWindowTitle("Griddy Layout Editor");
+		resize(1180, 660);
 		list->setIconSize(QSize(64, 64));
-		resize(1100, 620);
-		mode->addItems({"Grid", "Free"});
-		orient->addItems({"Any", "Landscape", "Portrait"});
+		group->setEditable(true);
+		group->setToolTip("Section the layout is listed under in the dock");
 		orient->setToolTip("The Griddy dock only lists layouts that match the target canvas");
-		fit->addItems({"Crop to fill", "Fit inside", "Stretch"});
 		for (const auto &[n, a] : kAspects)
 			aspect->addItem(n, a);
+		name->setPlaceholderText("Layout name");
+		name->setMinimumWidth(220);
+		QFont bold = name->font();
+		bold.setBold(true);
+		name->setFont(bold);
 		cols->setPlaceholderText("e.g. 2, 1");
 		rows->setPlaceholderText("e.g. 1, 1");
-
-		auto *lf = new QFormLayout(layoutBox);
-		lf->addRow("Name", name);
-		lf->addRow("Mode", mode);
-		lf->addRow("Orientation", orient);
-		lf->addRow("Column weights", cols);
-		lf->addRow("Row weights", rows);
-		lf->addRow("Gap", gap);
-		lf->addRow("Margin", margin);
-		lf->addRow(lock);
-		lf->addRow(mirror);
-		lf->addRow("Safe zone", safe);
-		lf->addRow(safeFit);
-
-		auto *del = new QPushButton("Remove slot");
-		auto *sf = new QFormLayout(slotBox);
-		sf->addRow("Fit", fit);
-		sf->addRow("Aspect", aspect);
-		sf->addRow("Order", order);
-		sf->addRow(del);
-
-		auto *help = new QLabel("<b>Grid:</b> click a cell to add a slot, drag across cells to merge.<br>"
-					"<b>Free:</b> drag to draw, drag a slot to move, drag its corner to resize.<br>"
-					"Del removes the selected slot. Slot 1 is the main slot. "
-					"Dashed outlines show the result with aspect lock.");
+		filter->setPlaceholderText("Filter layouts");
+		filter->setClearButtonEnabled(true);
 		help->setWordWrap(true);
+		help->setEnabled(false); // dimmed hint text
+		slotHint->setWordWrap(true);
 
-		auto *btns = new QGridLayout;
-		const QStringList names{"New", "Duplicate", "Delete", "Import…", "Export…", "Reset Defaults"};
-		QVector<QPushButton *> b;
-		for (int i = 0; i < names.size(); i++)
-			btns->addWidget(b.emplace_back(new QPushButton(names[i])), i / 2, i % 2);
+		// Toolbar: what the layout is
+		auto *bl = new QHBoxLayout(bar);
+		bl->setContentsMargins({});
+		bl->addWidget(name);
+		bl->addWidget(mode);
+		bl->addWidget(orient);
+		mode->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+		orient->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+		auto *dup = new QToolButton, *more = new QToolButton;
+		dup->setText("Duplicate");
+		more->setText("More");
+		more->setPopupMode(QToolButton::InstantPopup);
+		auto *menu = new QMenu(more);
+		more->setMenu(menu);
+		auto *top = new QHBoxLayout;
+		top->addWidget(bar);
+		top->addStretch();
+		top->addWidget(dup);
+		top->addWidget(more);
 
-		auto *left = new QVBoxLayout;
-		left->addWidget(list);
-		left->addLayout(btns);
+		// Left: layout list
+		auto *newBtn = new QPushButton("+ New Layout");
+		auto *left = new QWidget;
+		auto *ll = new QVBoxLayout(left);
+		ll->setContentsMargins({});
+		ll->addWidget(newBtn);
+		ll->addWidget(filter);
+		ll->addWidget(list, 1);
+		left->setFixedWidth(240);
+
+		// Middle: canvas and contextual hints
 		auto *mid = new QVBoxLayout;
 		mid->addWidget(canvas, 1);
 		mid->addWidget(help);
-		auto *right = new QVBoxLayout;
-		right->addWidget(layoutBox);
-		right->addWidget(slotBox);
-		right->addStretch();
-		auto *root = new QHBoxLayout(this);
-		root->addLayout(left, 0);
-		root->addLayout(mid, 1);
-		root->addLayout(right, 0);
 
-		connect(list, &QListWidget::currentRowChanged, this, [this] { loadLayout(); });
+		// Right: inspector tabs
+		auto *toggles = new QHBoxLayout;
+		toggles->addWidget(lock);
+		toggles->addWidget(mirror);
+		toggles->addStretch();
+		auto *lf = new QFormLayout(layoutTab);
+		lf->addRow("Group", group);
+		lf->addRow("Column widths", cols);
+		lf->addRow("Row heights", rows);
+		lf->addRow("Gap", sliderRow(gap, 0, 400, " px"));
+		lf->addRow("Margin", sliderRow(margin, 0, 800, " px"));
+		lf->addRow(toggles);
+		lf->addRow("Safe zone", safe);
+		lf->addRow(safeFit);
+		auto *del = new QPushButton("Remove Slot");
+		auto *sf = new QFormLayout(slotBox);
+		sf->setContentsMargins({});
+		sf->addRow("Fit", fit);
+		sf->addRow("Locked aspect", aspect);
+		sf->addRow("Order", order);
+		sf->addRow(del);
+		auto *sl = new QVBoxLayout(slotTab);
+		sl->addWidget(slotHint);
+		sl->addWidget(slotBox);
+		sl->addStretch();
+		tabs->addTab(layoutTab, "Layout");
+		tabs->addTab(slotTab, "Slot");
+		tabs->setFixedWidth(320);
+
+		auto *body = new QHBoxLayout;
+		body->addWidget(left);
+		body->addLayout(mid, 1);
+		body->addWidget(tabs);
+		auto *root = new QVBoxLayout(this);
+		root->addLayout(top);
+		root->addLayout(body, 1);
+
+		connect(list, &QListWidget::currentItemChanged, this, [this] {
+			if (!loading)
+				loadLayout();
+		});
+		connect(filter, &QLineEdit::textChanged, this, [this](const QString &t) {
+			list->filter = t;
+			list->fill(list->current());
+			loadLayout();
+		});
 		canvas->selected = [this] {
 			loadSlot();
+			tabs->setCurrentWidget(canvas->sel >= 0 ? slotTab : layoutTab);
 		};
 		canvas->changed = [this] {
 			commit(), loadSlot();
 		};
 
 		connect(name, &QLineEdit::textEdited, this, edit([this](Layout &L) { L.name = name->text(); }));
-		connect(mode, &QComboBox::currentIndexChanged, this, edit([this](Layout &L) {
-				mode->currentIndex() ? L.toFree() : L.toGrid();
-				loadLayout();
-			}));
+		auto setGroup = [this] {
+			const QString g = group->currentText().trimmed();
+			if (Layout *L = cur(); L && !loading && !g.isEmpty() && g != L->group) {
+				L->group = g;
+				reload(list->current());
+			}
+		};
+		connect(group->lineEdit(), &QLineEdit::editingFinished, this, setGroup);
+		connect(group, &QComboBox::textActivated, this, setGroup);
+		connect(&mode->group, &QButtonGroup::idClicked, this, edit([this](Layout &L) {
+			mode->index() ? L.toFree() : L.toGrid();
+			loadLayout();
+		}));
 		auto weights = edit([this](Layout &L) {
 			L.cols = parseWeights(cols->text());
 			L.rows = parseWeights(rows->text());
@@ -543,37 +749,40 @@ public:
 		});
 		connect(cols, &QLineEdit::textEdited, this, weights);
 		connect(rows, &QLineEdit::textEdited, this, weights);
-		connect(gap, &QSpinBox::valueChanged, this, edit([this](Layout &L) { L.gap = gap->value(); }));
-		connect(margin, &QSpinBox::valueChanged, this, edit([this](Layout &L) { L.margin = margin->value(); }));
-		connect(lock, &QCheckBox::toggled, this, edit([this](Layout &L) { L.aspectLock = lock->isChecked(); }));
-		connect(mirror, &QCheckBox::toggled, this, edit([this](Layout &L) { L.mirror = mirror->isChecked(); }));
-		connect(orient, &QComboBox::currentIndexChanged, this,
-			edit([this](Layout &L) { L.orient = orient->currentIndex(); }));
+		connect(gap, &QSlider::valueChanged, this, edit([this](Layout &L) { L.gap = gap->value(); }));
+		connect(margin, &QSlider::valueChanged, this, edit([this](Layout &L) { L.margin = margin->value(); }));
+		connect(lock, &QToolButton::toggled, this,
+			edit([this](Layout &L) { L.aspectLock = lock->isChecked(); }));
+		connect(mirror, &QToolButton::toggled, this,
+			edit([this](Layout &L) { L.mirror = mirror->isChecked(); }));
+		connect(&orient->group, &QButtonGroup::idClicked, this,
+			edit([this](Layout &L) { L.orient = orient->index(); }));
 		connect(safe, &QComboBox::currentIndexChanged, this,
 			edit([this](Layout &L) { L.safeZone = safe->currentIndex(); }));
 		connect(safeFit, &QCheckBox::toggled, this,
 			edit([this](Layout &L) { L.safeFit = safeFit->isChecked(); }));
-		connect(fit, &QComboBox::currentIndexChanged, this,
-			editSlot([this](Layout &, Slot &s) { s.fit = fit->currentIndex(); }));
+		connect(&fit->group, &QButtonGroup::idClicked, this,
+			editSlot([this](Layout &, Slot &s) { s.fit = fit->index(); }));
 		connect(aspect, &QComboBox::currentIndexChanged, this,
 			editSlot([this](Layout &, Slot &s) { s.aspect = aspect->currentData().toDouble(); }));
 		connect(order, &QSpinBox::valueChanged, this, editSlot([this](Layout &L, Slot &) {
 				L.slots.move(canvas->sel, order->value() - 1);
 				canvas->sel = order->value() - 1;
+				tabs->setTabText(1, QString("Slot %1").arg(canvas->sel + 1));
 			}));
 		connect(del, &QPushButton::clicked, this, editSlot([this](Layout &L, Slot &) {
 				L.slots.removeAt(canvas->sel);
 				canvas->select(-1);
 			}));
 
-		connect(b[0], &QPushButton::clicked, this, [this] {
+		connect(newBtn, &QPushButton::clicked, this, [this] {
 			Layout L;
 			L.name = "New Layout";
 			L.cols = {1, 1};
 			layouts() += L;
 			reload(int(layouts().size()) - 1);
 		});
-		connect(b[1], &QPushButton::clicked, this, [this] {
+		connect(dup, &QToolButton::clicked, this, [this] {
 			if (Layout *L = cur()) {
 				Layout copy = *L;
 				copy.name += " (copy)";
@@ -581,14 +790,7 @@ public:
 				reload(int(layouts().size()) - 1);
 			}
 		});
-		connect(b[2], &QPushButton::clicked, this, [this] {
-			if (cur()) {
-				const int i = list->currentRow();
-				layouts().removeAt(i);
-				reload(std::min(i, int(layouts().size()) - 1));
-			}
-		});
-		connect(b[3], &QPushButton::clicked, this, [this] {
+		connect(menu->addAction("Import Layouts…"), &QAction::triggered, this, [this] {
 			const QString f =
 				QFileDialog::getOpenFileName(this, "Import Layouts", {}, "Griddy layouts (*.json)");
 			const auto imported = readLayoutFile(f);
@@ -596,13 +798,20 @@ public:
 			if (!imported.isEmpty())
 				reload(int(layouts().size()) - 1);
 		});
-		connect(b[4], &QPushButton::clicked, this, [this] {
+		connect(menu->addAction("Export Layouts…"), &QAction::triggered, this, [this] {
 			const QString f = QFileDialog::getSaveFileName(this, "Export Layouts", "griddy-layouts.json",
 								       "Griddy layouts (*.json)");
 			if (!f.isEmpty() && !writeLayoutFile(f, layouts()))
 				QMessageBox::warning(this, "Griddy", "Could not write " + f);
 		});
-		connect(b[5], &QPushButton::clicked, this, [this] {
+		menu->addSeparator();
+		connect(menu->addAction("Delete Layout"), &QAction::triggered, this, [this] {
+			if (const int i = list->current(); i >= 0) {
+				layouts().removeAt(i);
+				reload(std::min(i, int(layouts().size()) - 1));
+			}
+		});
+		connect(menu->addAction("Reset to Built-in Presets…"), &QAction::triggered, this, [this] {
 			if (QMessageBox::question(this, "Griddy", "Replace all layouts with the built-in presets?") ==
 			    QMessageBox::Yes) {
 				layouts() = builtinLayouts();
@@ -611,14 +820,12 @@ public:
 		});
 	}
 
-	void reload(int row)
+	// Refills the list and selects layout `index`.
+	void reload(int index)
 	{
 		loading = true;
-		list->clear();
-		for (const auto &L : layouts())
-			list->addItem(new QListWidgetItem(layoutIcon(L), L.name));
+		list->fill(index);
 		loading = false;
-		list->setCurrentRow(row);
 		loadLayout();
 		commit();
 	}
@@ -672,20 +879,61 @@ static QVector<ItemInfo> sceneItems()
 	return v;
 }
 
+// The selected layout drawn on the target canvas, with each slot's source name.
+class Preview : public QWidget {
+public:
+	int index = -1;
+	QStringList names;
+	Preview()
+	{
+		QSizePolicy sp(QSizePolicy::Expanding, QSizePolicy::Preferred);
+		sp.setHeightForWidth(true);
+		setSizePolicy(sp);
+	}
+	const Layout *layout() const { return index >= 0 && index < layouts().size() ? &layouts()[index] : nullptr; }
+	bool hasHeightForWidth() const override { return true; }
+	int heightForWidth(int w) const override
+	{
+		const QSizeF c = layout() ? layoutSize(*layout()) : QSizeF(16, 9);
+		return std::min(int(w * c.height() / c.width()), 240);
+	}
+	QSize sizeHint() const override { return {240, heightForWidth(240)}; }
+
+protected:
+	void paintEvent(QPaintEvent *) override
+	{
+		if (const Layout *L = layout()) {
+			QPainter p(this);
+			const View v(rect(), layoutSize(*L));
+			p.fillRect(v.canvas, QColor(30, 30, 36));
+			drawSlots(p, v, computeOnCanvas(*L), -1, false, names);
+			drawSafeZone(p, v, *L);
+		}
+	}
+};
+
 class GriddyDock : public QWidget {
-	QListWidget *list = new QListWidget;
-	QComboBox *canvasBox = new QComboBox, *safe = safeZoneBox();
-	QSpinBox *gap = spin(400), *margin = spin(800), *pct = spin(95, " %");
-	QCheckBox *lock = new QCheckBox("Aspect lock"), *mirror = new QCheckBox("Mirror"),
-		  *safeFit = new QCheckBox("Keep inside");
-	QFormLayout *slotForm = new QFormLayout;
+	LayoutList *list = new LayoutList;
+	Segmented *canvasSeg = new Segmented;
+	QStringList canvasNames; // per canvas button, empty = main
+	QLineEdit *search = new QLineEdit;
+	QLabel *hint = new QLabel, *title = new QLabel, *status = new QLabel;
+	Preview *preview = new Preview;
+	QComboBox *safe = safeZoneBox();
+	QSlider *gap = nullptr, *margin = nullptr, *pct = nullptr;
+	QToolButton *lock = toggle("Aspect lock", "Keep each source's aspect ratio; the group is centered"),
+		    *mirror = toggle("Mirror", "Flip the layout left/right");
+	QCheckBox *safeFit = new QCheckBox("Keep inside");
+	QFormLayout *slotForm = new QFormLayout, *params = new QFormLayout;
+	QWidget *pctRow = nullptr;
+	QPushButton *apply = new QPushButton("Apply");
 	QVector<QComboBox *> pickers;
-	QLabel *status = new QLabel;
+	int selCount = -1;
 	bool loading = false;
 
 	Layout *cur()
 	{
-		const int i = list->currentRow();
+		const int i = list->current();
 		return i >= 0 && i < layouts().size() ? &layouts()[i] : nullptr;
 	}
 	std::function<void()> edit(std::function<void(Layout &)> fn)
@@ -703,11 +951,15 @@ class GriddyDock : public QWidget {
 	{
 		Layout *L = cur();
 		loading = true;
+		title->setText(L ? L->name : "No layout for this canvas");
+		preview->index = list->current();
+		preview->updateGeometry();
+		preview->update();
 		if (L) {
 			gap->setValue(L->gap);
 			margin->setValue(L->margin);
-			pct->setEnabled(L->mainPct() >= 0);
-			pct->setValue(std::max(0, L->mainPct()));
+			params->setRowVisible(pctRow, L->mainPct() >= 0);
+			pct->setValue(std::max(5, L->mainPct()));
 			lock->setChecked(L->aspectLock);
 			mirror->setChecked(L->mirror);
 			safe->setCurrentIndex(L->safeZone);
@@ -715,97 +967,165 @@ class GriddyDock : public QWidget {
 		}
 		loading = false;
 	}
+	void setStatus(const QString &text, bool ok = false)
+	{
+		status->setStyleSheet(ok ? "color: #3fc1a5" : "");
+		status->setText(text);
+	}
+	// Keeps the selection banner and the Apply button in step with OBS.
+	void updateHint()
+	{
+		obs_source_t *src = targetScene();
+		apply->setText(src ? QString("Apply to “%1”").arg(obs_source_get_name(src)) : "Apply");
+		obs_source_release(src);
+		const auto items = sceneItems();
+		const int n = int(std::count_if(items.begin(), items.end(), [](auto &i) { return i.selected; }));
+		if (n == selCount)
+			return;
+		selCount = n;
+		hint->setText(
+			n ? QString("<b>%1 source%2 selected in OBS.</b> Click a layout to place them in order, top "
+				    "of the Sources list first.")
+					.arg(n)
+					.arg(n > 1 ? "s" : "")
+			  : "<b>No sources selected in OBS.</b> Pick a source for each slot below and press Apply.");
+		hint->setStyleSheet(QString("QLabel { border: 1px solid %1; border-radius: 6px; padding: 6px; }")
+					    .arg(n ? "palette(highlight)" : "palette(mid)"));
+	}
 
 public:
 	GriddyDock()
 	{
 		list->setViewMode(QListView::IconMode);
-		list->setIconSize(QSize(96, 54));
 		list->setResizeMode(QListView::Adjust);
 		list->setMovement(QListView::Static);
 		list->setWordWrap(true);
+		list->setSpacing(2);
 		list->setMinimumHeight(110);
-		pct->setRange(5, 95);
+		hint->setWordWrap(true);
 		status->setWordWrap(true);
-
-		canvasBox->setToolTip("Canvas to arrange, e.g. a Vertical Canvas. Only matching layouts are listed.");
+		search->setPlaceholderText("Search layouts");
+		search->setClearButtonEnabled(true);
+		canvasSeg->setToolTip("Canvas to arrange, e.g. a Vertical Canvas. Only matching layouts are listed.");
 		safeFit->setToolTip("Keep slots out of the area covered by the app's UI");
+		QFont bold = title->font();
+		bold.setBold(true);
+		title->setFont(bold);
 
-		auto *params = new QFormLayout;
-		params->addRow("Gap", gap);
-		params->addRow("Margin", margin);
-		params->addRow("Main size", pct);
-		auto *checks = new QHBoxLayout;
-		checks->addWidget(lock);
-		checks->addWidget(mirror);
-		params->addRow(checks);
+		auto *refresh = new QToolButton, *editBtn = new QToolButton, *rotate = new QToolButton,
+		     *adjust = new QToolButton;
+		refresh->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+		refresh->setToolTip("Reload the canvases and the scene's sources");
+		editBtn->setText("Edit Layout…");
+		editBtn->setAutoRaise(true);
+		rotate->setText("Rotate");
+		rotate->setToolTip("Move each source to the next slot and apply");
+		apply->setToolTip("Arrange the chosen sources into the layout");
+		apply->setStyleSheet("QPushButton { background: palette(highlight); color: palette(highlighted-text); "
+				     "font-weight: bold; padding: 6px; border-radius: 4px; }");
+		adjust->setText("Adjust this layout");
+		adjust->setCheckable(true);
+		adjust->setAutoRaise(true);
+		adjust->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+
+		params->setContentsMargins({});
+		params->addRow("Gap", sliderRow(gap, 0, 400, " px"));
+		params->addRow("Margin", sliderRow(margin, 0, 800, " px"));
+		params->addRow("Main size", pctRow = sliderRow(pct, 5, 95, " %"));
+		auto *toggles = new QHBoxLayout;
+		toggles->addWidget(lock);
+		toggles->addWidget(mirror);
+		toggles->addStretch();
+		params->addRow(toggles);
 		auto *safeRow = new QHBoxLayout;
 		safeRow->addWidget(safe, 1);
 		safeRow->addWidget(safeFit);
 		params->addRow("Safe zone", safeRow);
+		auto *settings = new QWidget;
+		settings->setLayout(params);
 
-		auto *slots = new QGroupBox("Slots");
-		slots->setLayout(slotForm);
+		auto *head = new QHBoxLayout;
+		head->addWidget(title, 1);
+		head->addWidget(editBtn);
+		auto *card = new QFrame;
+		card->setFrameShape(QFrame::StyledPanel);
+		card->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+		auto *cl = new QVBoxLayout(card);
+		cl->addLayout(head);
+		cl->addWidget(preview);
+		cl->addLayout(slotForm);
+		cl->addWidget(adjust);
+		cl->addWidget(settings);
 
-		auto *apply = new QPushButton("Apply"), *rotate = new QPushButton("Rotate"),
-		     *refresh = new QPushButton("Refresh"), *editBtn = new QPushButton("Edit Layouts…");
-		apply->setToolTip("Arrange the chosen sources into the layout");
-		rotate->setToolTip("Shift each source to the next slot and apply");
-		refresh->setToolTip("Reload the scene's sources");
-		auto *btns = new QGridLayout;
-		btns->addWidget(apply, 0, 0);
-		btns->addWidget(rotate, 0, 1);
-		btns->addWidget(refresh, 1, 0);
-		btns->addWidget(editBtn, 1, 1);
+		auto *searchRow = new QHBoxLayout;
+		searchRow->addWidget(search, 1);
+		searchRow->addWidget(refresh);
+		auto *actions = new QHBoxLayout;
+		actions->addWidget(apply, 1);
+		actions->addWidget(rotate);
 
-		auto *top = new QFormLayout;
-		top->addRow("Canvas", canvasBox);
 		auto *root = new QVBoxLayout(this);
-		root->addLayout(top);
+		root->addWidget(canvasSeg);
+		root->addWidget(hint);
+		root->addLayout(searchRow);
 		root->addWidget(list, 1);
-		root->addLayout(params);
-		root->addWidget(slots);
-		root->addLayout(btns);
+		root->addWidget(card);
+		root->addLayout(actions);
 		root->addWidget(status);
 
-		connect(list, &QListWidget::currentRowChanged, this, [this] {
+		connect(adjust, &QToolButton::toggled, this, [adjust, settings](bool on) {
+			settings->setVisible(on);
+			adjust->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+			config_set_bool(obs_frontend_get_user_config(), "Griddy", "AdjustHidden", !on);
+		});
+		adjust->setChecked(!config_get_bool(obs_frontend_get_user_config(), "Griddy", "AdjustHidden"));
+		Q_EMIT adjust->toggled(adjust->isChecked());
+
+		connect(list, &QListWidget::currentItemChanged, this, [this] {
 			loadControls();
 			refreshPickers();
 		});
 		// One click: selected sources go straight into the layout; otherwise pick them below.
-		connect(list, &QListWidget::itemClicked, this, [this] {
+		connect(list, &QListWidget::itemClicked, this, [this](QListWidgetItem *it) {
 			const auto items = sceneItems();
 			const auto n = std::count_if(items.begin(), items.end(), [](auto &i) { return i.selected; });
-			if (!n)
-				return status->setText("Select sources in OBS, or choose them below and press Apply.");
+			if (list->layoutAt(it) < 0 || !n)
+				return;
 			refreshPickers(true);
 			applyLayout();
 			if (n > pickers.size())
 				status->setText(status->text() + QString(" %1 extra selected source(s) left untouched.")
 									 .arg(n - pickers.size()));
 		});
-		connect(gap, &QSpinBox::valueChanged, this, edit([this](Layout &L) { L.gap = gap->value(); }));
-		connect(margin, &QSpinBox::valueChanged, this, edit([this](Layout &L) { L.margin = margin->value(); }));
-		connect(pct, &QSpinBox::valueChanged, this, edit([this](Layout &L) { L.setMainPct(pct->value()); }));
-		connect(lock, &QCheckBox::toggled, this, edit([this](Layout &L) { L.aspectLock = lock->isChecked(); }));
-		connect(mirror, &QCheckBox::toggled, this, edit([this](Layout &L) { L.mirror = mirror->isChecked(); }));
+		connect(search, &QLineEdit::textChanged, this, [this](const QString &t) {
+			list->filter = t;
+			refreshList();
+		});
+		connect(gap, &QSlider::valueChanged, this, edit([this](Layout &L) { L.gap = gap->value(); }));
+		connect(margin, &QSlider::valueChanged, this, edit([this](Layout &L) { L.margin = margin->value(); }));
+		connect(pct, &QSlider::valueChanged, this, edit([this](Layout &L) { L.setMainPct(pct->value()); }));
+		connect(lock, &QToolButton::toggled, this,
+			edit([this](Layout &L) { L.aspectLock = lock->isChecked(); }));
+		connect(mirror, &QToolButton::toggled, this,
+			edit([this](Layout &L) { L.mirror = mirror->isChecked(); }));
 		connect(safe, &QComboBox::currentIndexChanged, this,
 			edit([this](Layout &L) { L.safeZone = safe->currentIndex(); }));
 		connect(safeFit, &QCheckBox::toggled, this,
 			edit([this](Layout &L) { L.safeFit = safeFit->isChecked(); }));
-		connect(canvasBox, &QComboBox::currentIndexChanged, this, [this] {
-			g_canvasName = canvasBox->currentData().toString();
+		connect(&canvasSeg->group, &QButtonGroup::idClicked, this, [this](int i) {
+			g_canvasName = canvasNames.value(i);
 			config_set_string(obs_frontend_get_user_config(), "Griddy", "Canvas",
 					  g_canvasName.toUtf8().constData());
+			selCount = -1;
 			refreshList();
 		});
 		connect(apply, &QPushButton::clicked, this, [this] { applyLayout(); });
-		connect(refresh, &QPushButton::clicked, this, [this] {
+		connect(refresh, &QToolButton::clicked, this, [this] {
 			refreshCanvases();
 			refreshPickers();
 		});
-		connect(editBtn, &QPushButton::clicked, this, [this] { openEditor(list->currentRow()); });
-		connect(rotate, &QPushButton::clicked, this, [this] {
+		connect(editBtn, &QToolButton::clicked, this, [this] { openEditor(list->current()); });
+		connect(rotate, &QToolButton::clicked, this, [this] {
 			QVector<qint64> ids;
 			for (auto *c : pickers)
 				ids += c->currentData().toLongLong();
@@ -816,46 +1136,50 @@ public:
 				pickers[i]->setCurrentIndex(std::max(0, pickers[i]->findData(ids[i])));
 			applyLayout();
 		});
+		auto *timer = new QTimer(this);
+		connect(timer, &QTimer::timeout, this, [this] {
+			if (isVisible())
+				updateHint();
+		});
+		timer->start(500);
 
 		g_canvasName = QString::fromUtf8(config_get_string(obs_frontend_get_user_config(), "Griddy", "Canvas"));
 		refreshCanvases();
+		updateHint();
 	}
 
-	static void openEditor(int row);
+	static void openEditor(int index);
 
 	// Main canvas plus extra canvases from plugins such as Vertical Canvas. A saved canvas that isn't
 	// loaded yet stays the target; until it appears, lookups fall back to the main canvas.
 	void refreshCanvases()
 	{
-		const QSignalBlocker block(canvasBox);
-		canvasBox->clear();
-		canvasBox->addItem("Main", QString());
+		canvasNames = {QString()};
 		obs_frontend_canvas_list l = {};
 		obs_frontend_get_canvases(&l);
 		for (size_t i = 0; i < l.canvases.num; i++)
 			if (!(obs_canvas_get_flags(l.canvases.array[i]) & MAIN))
-				canvasBox->addItem(obs_canvas_get_name(l.canvases.array[i]),
-						   QString(obs_canvas_get_name(l.canvases.array[i])));
+				canvasNames += obs_canvas_get_name(l.canvases.array[i]);
 		obs_frontend_canvas_list_free(&l);
-		canvasBox->setCurrentIndex(std::max(0, canvasBox->findData(g_canvasName)));
+		QStringList labels;
+		for (const auto &n : canvasNames) {
+			const QSizeF c = canvasSize(n);
+			labels += QString("%1  %2×%3").arg(n.isEmpty() ? "Main" : n).arg(c.width()).arg(c.height());
+		}
+		canvasSeg->setItems(labels);
+		canvasSeg->setIndex(std::max(0, int(canvasNames.indexOf(g_canvasName))));
 		refreshList();
 	}
 
 	// Lists the layouts, hiding those made for the other orientation than the target canvas.
 	void refreshList()
 	{
-		int row = std::max(0, list->currentRow());
 		const QSizeF c = canvasSize();
-		const QSignalBlocker block(list);
-		list->clear();
 		list->setIconSize(c.scaled(96, 96, Qt::KeepAspectRatio).toSize());
-		for (const auto &L : layouts()) {
-			list->addItem(new QListWidgetItem(layoutIcon(L), L.name));
-			list->item(list->count() - 1)->setHidden(!L.fits(c.width(), c.height()));
-		}
-		for (int i = 0; i < list->count() && (row >= list->count() || list->item(row)->isHidden()); i++)
-			row = i;
-		list->setCurrentRow(std::min(row, list->count() - 1));
+		list->show = [c](const Layout &L) {
+			return L.fits(c.width(), c.height());
+		};
+		list->fill(list->current());
 		loadControls();
 		refreshPickers();
 	}
@@ -877,14 +1201,30 @@ public:
 		pickers.clear();
 		const Layout *L = cur();
 		for (int i = 0; L && i < L->slots.size(); i++) {
+			auto *badge = new QLabel(QString::number(i + 1));
+			badge->setAlignment(Qt::AlignCenter);
+			badge->setFixedSize(22, 22);
+			badge->setToolTip(i ? QString("Slot %1").arg(i + 1) : "Slot 1 (main)");
+			badge->setStyleSheet(
+				QString("background: %1; color: #111; border-radius: 4px; font-weight: bold;")
+					.arg(kColors[i % 6].name()));
 			auto *c = new QComboBox;
 			c->addItem("(none)", qint64(-1));
 			for (const auto &it : items)
 				c->addItem(it.name, qint64(it.id));
 			c->setCurrentIndex(std::max(0, c->findData(i < want.size() ? want[i] : -1)));
-			slotForm->addRow(i ? QString::number(i + 1) : "1 (main)", c);
+			connect(c, &QComboBox::currentIndexChanged, this, [this] { updateNames(); });
+			slotForm->addRow(badge, c);
 			pickers += c;
 		}
+		updateNames();
+	}
+	void updateNames()
+	{
+		preview->names.clear();
+		for (auto *c : pickers)
+			preview->names += c->currentIndex() > 0 ? c->currentText() : QString();
+		preview->update();
 	}
 
 	void applyLayout()
@@ -892,7 +1232,7 @@ public:
 		const Layout *L = cur();
 		obs_source_t *src = targetScene();
 		if (!src)
-			return status->setText("No active scene on the target canvas.");
+			return setStatus("No active scene on the target canvas.");
 		if (!L)
 			return obs_source_release(src);
 		obs_scene_t *scene = obs_scene_from_source(src);
@@ -928,10 +1268,12 @@ public:
 				obs_data_get_json(before), obs_data_get_json(after), false);
 		obs_data_release(before);
 		obs_data_release(after);
-		status->setText(QString("Applied %1 of %2 slot(s) in '%3'.")
-					.arg(n)
-					.arg(L->slots.size())
-					.arg(obs_source_get_name(src)));
+		setStatus(n ? QString("Applied %1 of %2 slot(s) in '%3'. Ctrl+Z undoes it.")
+					  .arg(n)
+					  .arg(L->slots.size())
+					  .arg(obs_source_get_name(src))
+			    : "Nothing applied. Pick a source for at least one slot.",
+			  n > 0);
 		obs_source_release(src);
 	}
 };
@@ -941,11 +1283,11 @@ public:
 static QPointer<GriddyDock> g_dock;
 static QPointer<EditorDialog> g_editor;
 
-void GriddyDock::openEditor(int row)
+void GriddyDock::openEditor(int index)
 {
 	if (!g_editor)
 		g_editor = new EditorDialog(static_cast<QWidget *>(obs_frontend_get_main_window()));
-	g_editor->reload(std::max(0, row));
+	g_editor->reload(std::max(0, index));
 	g_editor->show();
 	g_editor->raise();
 	g_editor->activateWindow();
