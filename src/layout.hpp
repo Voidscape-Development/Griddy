@@ -5,6 +5,14 @@
 #include <QVector>
 
 enum Fit { FitCrop, FitInside, FitStretch };
+enum Orient { AnyOrient, Landscape, Portrait };
+
+// Platform UI safe zones: name and insets (left, top, right, bottom) as canvas fractions. Index 0 = off.
+struct SafeZone {
+	const char *name;
+	double l, t, r, b;
+};
+extern const QVector<SafeZone> kSafeZones;
 
 struct Slot {
 	QRectF r;          // grid: cell x, y, column span, row span | free: normalized 0..1 rect
@@ -19,6 +27,11 @@ struct Layout {
 	QVector<Slot> slots;              // slot 0 is the main slot
 	int gap = 10, margin = 0;
 	bool aspectLock = true, mirror = false;
+	int orient = AnyOrient, safeZone = 0;
+	bool safeFit = false; // keep slots inside the safe zone
+
+	QRectF safeRect(double W, double H) const;
+	bool fits(double W, double H) const { return orient == AnyOrient || (orient == Portrait) == (H > W); }
 
 	// Pixel rects for each slot on a W x H canvas.
 	QVector<QRectF> compute(double W, double H) const;
