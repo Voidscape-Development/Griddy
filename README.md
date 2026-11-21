@@ -16,7 +16,7 @@ One-click source layouts for OBS Studio. Podcasts, eSports, and custom grids are
   - **Safe zone:** shade the area covered by TikTok, YouTube Shorts or Instagram Reels buttons and captions (approximate), and optionally **Keep inside** it.
 - **Built-in presets:**
   - *Podcast / panels:* Side by Side, Three Across, 2x2 Grid, 3x3 Grid, Interview, Talk Show
-  - *eSports / gaming:* Main + Stacked, Main + Side Column (3 and 4 cams), Main + Bottom Strip, Main + Flanking, L-Shape (1 + 5), Reverse L-Shape (1 + 5), Versus
+  - *eSports / gaming:* Main + Stacked, Main + Side Column (3 and 4 cams), Main + Bottom Strip, Main + Flanking, L-Shape (1 + 5, use **Mirror** for cams on the right), Versus
   - *Overlays:* Picture in Picture, Two Corner PiP, Screen + Facecam
   - *Portrait canvas:* Vertical: Game + Cam, Game + 2 Cams, Cropped Game + Cam, Three Stacked, Top / Bottom Split, Cam + Game PiP
 - **Layout editor** (Tools → Griddy Layout Editor, or **Edit Layout…** in the dock):
@@ -29,7 +29,7 @@ One-click source layouts for OBS Studio. Podcasts, eSports, and custom grids are
   - **More** menu: import/export layouts as JSON, delete a layout, or reset to the built-in presets.
 - Applying a layout is **one-shot and undoable** (Ctrl+Z). It sets the item's position and bounding box, so the items stay normal OBS sources you can tweak afterwards. Existing crops are kept.
 - In Studio Mode, layouts apply to the preview scene. On other canvases they apply to that canvas's active scene; press **Refresh** after switching scenes there.
-- Already have a saved `layouts.json`? Use **Reset Defaults** in the editor to get the newest presets (portrait layouts, L-Shape / Reverse L-Shape).
+- Already have a saved `layouts.json`? Use **Reset Defaults** in the editor to get the newest presets (portrait layouts, the left-hand L-Shape).
 
 ### How aspect lock works
 

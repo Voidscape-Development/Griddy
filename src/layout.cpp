@@ -246,13 +246,11 @@ QVector<Layout> builtinLayouts()
 	auto s = [](double x, double y, double w = 1, double h = 1, double a = 16.0 / 9) {
 		return Slot{QRectF(x, y, w, h), FitCrop, a};
 	};
-	QVector<Slot> grid3x3, lShape{s(1, 0, 2, 2)}, revL{s(0, 0, 2, 2)};
+	QVector<Slot> grid3x3, lShape{s(1, 0, 2, 2)}; // small sources left of and below the main
 	for (int i = 0; i < 9; i++)
 		grid3x3 += s(i % 3, i / 3);
-	for (QPoint p : {QPoint(2, 0), QPoint(2, 1), QPoint(2, 2), QPoint(1, 2), QPoint(0, 2)}) {
-		revL += s(p.x(), p.y());
-		lShape += s(2 - p.x(), p.y()); // small sources left of and below the main
-	}
+	for (QPoint p : {QPoint(0, 0), QPoint(0, 1), QPoint(0, 2), QPoint(1, 2), QPoint(2, 2)})
+		lShape += s(p.x(), p.y());
 	QVector<Layout> v{
 		g("Side by Side", {1, 1}, {1}, {s(0, 0), s(1, 0)}),
 		g("Three Across", {1, 1, 1}, {1}, {s(0, 0), s(1, 0), s(2, 0)}),
@@ -266,7 +264,6 @@ QVector<Layout> builtinLayouts()
 		g("Main + Bottom Strip", {1, 1, 1}, {3, 1}, {s(0, 0, 3, 1), s(0, 1), s(1, 1), s(2, 1)}),
 		g("Main + Flanking", {1, 3, 1}, {1}, {s(1, 0), s(0, 0, 1, 1, 0), s(2, 0, 1, 1, 0)}),
 		g("L-Shape (1 + 5)", {1, 1, 1}, {1, 1, 1}, lShape),
-		g("Reverse L-Shape (1 + 5)", {1, 1, 1}, {1, 1, 1}, revL),
 		g("Versus", {1, 1, 1, 1}, {2, 1}, {s(0, 0, 2, 1), s(2, 0, 2, 1), s(0, 1), s(3, 1)}),
 		f("Picture in Picture", {s(0, 0), s(0.72, 0.7, 0.25, 0.25)}, 0),
 		f("Two Corner PiP", {s(0, 0), s(0.03, 0.7, 0.25, 0.25), s(0.72, 0.7, 0.25, 0.25)}, 0),
@@ -280,7 +277,7 @@ QVector<Layout> builtinLayouts()
 	};
 	for (int i = 0; i < v.size(); i++) {
 		v[i].orient = v[i].name.startsWith("Vertical") ? Portrait : Landscape;
-		v[i].group = i < 6 ? "Podcast" : i < 14 ? "eSports" : i < 17 ? "Overlays" : "Portrait";
+		v[i].group = i < 6 ? "Podcast" : i < 13 ? "eSports" : i < 16 ? "Overlays" : "Portrait";
 	}
 	return v;
 }
