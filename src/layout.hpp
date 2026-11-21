@@ -21,7 +21,7 @@ struct Slot {
 };
 
 struct Layout {
-	QString name;
+	QString name, group = "Custom"; // group: gallery section, e.g. "Podcast"
 	bool grid = true;
 	QVector<double> cols{1}, rows{1}; // grid column/row weights
 	QVector<Slot> slots;              // slot 0 is the main slot

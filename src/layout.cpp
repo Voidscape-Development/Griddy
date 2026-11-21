@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <algorithm>
 #include <cmath>
 
 static double sum(const QVector<double> &v, int a = 0, int n = -1)
@@ -190,15 +191,28 @@ QJsonObject Layout::toJson() const
 	for (const Slot &x : slots)
 		s += QJsonObject{{"x", x.r.x()},      {"y", x.r.y()}, {"w", x.r.width()},
 				 {"h", x.r.height()}, {"fit", x.fit}, {"aspect", x.aspect}};
-	return {{"name", name},     {"grid", grid},         {"cols", toArray(cols)},    {"rows", toArray(rows)},
-		{"gap", gap},       {"margin", margin},     {"aspectLock", aspectLock}, {"mirror", mirror},
-		{"orient", orient}, {"safeZone", safeZone}, {"safeFit", safeFit},       {"slots", s}};
+	return {{"name", name},
+		{"group", group},
+		{"grid", grid},
+		{"cols", toArray(cols)},
+		{"rows", toArray(rows)},
+		{"gap", gap},
+		{"margin", margin},
+		{"aspectLock", aspectLock},
+		{"mirror", mirror},
+		{"orient", orient},
+		{"safeZone", safeZone},
+		{"safeFit", safeFit},
+		{"slots", s}};
 }
 
 Layout Layout::fromJson(const QJsonObject &o)
 {
 	Layout L;
 	L.name = o["name"].toString("Layout");
+	static const auto builtins = builtinLayouts(); // older files have no group: take the preset's, if any
+	auto b = std::find_if(builtins.begin(), builtins.end(), [&](auto &x) { return x.name == L.name; });
+	L.group = o["group"].toString(b != builtins.end() ? b->group : L.group);
 	L.grid = o["grid"].toBool(true);
 	L.cols = toWeights(o["cols"]);
 	L.rows = toWeights(o["rows"]);
@@ -232,28 +246,31 @@ QVector<Layout> builtinLayouts()
 	auto s = [](double x, double y, double w = 1, double h = 1, double a = 16.0 / 9) {
 		return Slot{QRectF(x, y, w, h), FitCrop, a};
 	};
-	QVector<Slot> grid3x3, lShape{s(0, 0, 2, 2)};
+	QVector<Slot> grid3x3, lShape{s(1, 0, 2, 2)}, revL{s(0, 0, 2, 2)};
 	for (int i = 0; i < 9; i++)
 		grid3x3 += s(i % 3, i / 3);
-	for (QPoint p : {QPoint(2, 0), QPoint(2, 1), QPoint(2, 2), QPoint(1, 2), QPoint(0, 2)})
-		lShape += s(p.x(), p.y());
+	for (QPoint p : {QPoint(2, 0), QPoint(2, 1), QPoint(2, 2), QPoint(1, 2), QPoint(0, 2)}) {
+		revL += s(p.x(), p.y());
+		lShape += s(2 - p.x(), p.y()); // small sources left of and below the main
+	}
 	QVector<Layout> v{
 		g("Side by Side", {1, 1}, {1}, {s(0, 0), s(1, 0)}),
 		g("Three Across", {1, 1, 1}, {1}, {s(0, 0), s(1, 0), s(2, 0)}),
 		g("2x2 Grid", {1, 1}, {1, 1}, {s(0, 0), s(1, 0), s(0, 1), s(1, 1)}),
 		g("3x3 Grid", {1, 1, 1}, {1, 1, 1}, grid3x3),
+		f("Interview", {s(0, 0, 0.65, 1), s(0.65, 0, 0.35, 1)}),
+		g("Talk Show", {1, 1.4, 1}, {1}, {s(1, 0), s(0, 0, 1, 1, 0), s(2, 0, 1, 1, 0)}),
 		g("Main + Stacked", {2, 1}, {1, 1}, {s(0, 0, 1, 2), s(1, 0), s(1, 1)}),
 		g("Main + Side Column (3)", {3, 1}, {1, 1, 1}, {s(0, 0, 1, 3), s(1, 0), s(1, 1), s(1, 2)}),
 		g("Main + Side Column (4)", {4, 1}, {1, 1, 1, 1}, {s(0, 0, 1, 4), s(1, 0), s(1, 1), s(1, 2), s(1, 3)}),
 		g("Main + Bottom Strip", {1, 1, 1}, {3, 1}, {s(0, 0, 3, 1), s(0, 1), s(1, 1), s(2, 1)}),
 		g("Main + Flanking", {1, 3, 1}, {1}, {s(1, 0), s(0, 0, 1, 1, 0), s(2, 0, 1, 1, 0)}),
 		g("L-Shape (1 + 5)", {1, 1, 1}, {1, 1, 1}, lShape),
-		g("Screen + Facecam", {3, 1}, {1}, {s(0, 0), s(1, 0, 1, 1, 0)}),
-		g("Talk Show", {1, 1.4, 1}, {1}, {s(1, 0), s(0, 0, 1, 1, 0), s(2, 0, 1, 1, 0)}),
+		g("Reverse L-Shape (1 + 5)", {1, 1, 1}, {1, 1, 1}, revL),
 		g("Versus", {1, 1, 1, 1}, {2, 1}, {s(0, 0, 2, 1), s(2, 0, 2, 1), s(0, 1), s(3, 1)}),
-		f("Interview", {s(0, 0, 0.65, 1), s(0.65, 0, 0.35, 1)}),
 		f("Picture in Picture", {s(0, 0), s(0.72, 0.7, 0.25, 0.25)}, 0),
 		f("Two Corner PiP", {s(0, 0), s(0.03, 0.7, 0.25, 0.25), s(0.72, 0.7, 0.25, 0.25)}, 0),
+		g("Screen + Facecam", {3, 1}, {1}, {s(0, 0), s(1, 0, 1, 1, 0)}),
 		g("Vertical: Game + Cam", {1}, {1, 2}, {s(0, 0), s(0, 1, 1, 1, 0)}),
 		g("Vertical: Game + 2 Cams", {1}, {1, 1, 1}, {s(0, 0), s(0, 1, 1, 1, 0), s(0, 2, 1, 1, 0)}),
 		g("Vertical: Cropped Game + Cam", {1}, {3, 2}, {s(0, 0, 1, 1, 0), s(0, 1, 1, 1, 0)}),
@@ -261,8 +278,10 @@ QVector<Layout> builtinLayouts()
 		g("Vertical: Top / Bottom Split", {1}, {1, 1}, {s(0, 0, 1, 1, 0), s(0, 1, 1, 1, 0)}),
 		f("Vertical: Cam + Game PiP", {s(0, 0, 1, 1, 0), s(0.05, 0.06, 0.9, 0.3)}, 0),
 	};
-	for (auto &L : v)
-		L.orient = L.name.startsWith("Vertical") ? Portrait : Landscape;
+	for (int i = 0; i < v.size(); i++) {
+		v[i].orient = v[i].name.startsWith("Vertical") ? Portrait : Landscape;
+		v[i].group = i < 6 ? "Podcast" : i < 14 ? "eSports" : i < 17 ? "Overlays" : "Portrait";
+	}
 	return v;
 }
 
