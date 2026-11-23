@@ -396,6 +396,32 @@ static QToolButton *toggle(const QString &text, const QString &tip)
 	return b;
 }
 
+// Natural order, case-insensitive: "Cam 2" before "Cam 10".
+static bool naturalLess(const QString &a, const QString &b)
+{
+	static const QCollator c = [] {
+		QCollator c;
+		c.setNumericMode(true);
+		c.setCaseSensitivity(Qt::CaseInsensitive);
+		return c;
+	}();
+	return c.compare(a, b) < 0;
+}
+
+// Muted 11 px section heading (SOURCES / ADJUST THIS LAYOUT).
+static void caption(QWidget *w)
+{
+	QFont f = w->font();
+	f.setPixelSize(11);
+	f.setWeight(QFont::DemiBold);
+	f.setLetterSpacing(QFont::AbsoluteSpacing, 1);
+	w->setFont(f);
+	QPalette p = w->palette();
+	for (auto role : {QPalette::WindowText, QPalette::ButtonText})
+		p.setColor(role, p.color(QPalette::PlaceholderText));
+	w->setPalette(p);
+}
+
 static QComboBox *safeZoneBox()
 {
 	auto *c = new QComboBox;
@@ -564,10 +590,13 @@ class EditorDialog : public QDialog {
 		layoutTab->setEnabled(L);
 		if (L) {
 			name->setText(L->name);
-			group->clear();
+			QStringList groups;
 			for (const auto &x : layouts())
-				if (group->findText(x.group) < 0)
-					group->addItem(x.group);
+				if (!groups.contains(x.group))
+					groups += x.group;
+			std::sort(groups.begin(), groups.end(), naturalLess);
+			group->clear();
+			group->addItems(groups);
 			group->setCurrentText(L->group);
 			mode->setIndex(L->grid ? 0 : 1);
 			orient->setIndex(L->orient);
@@ -917,7 +946,7 @@ class GriddyDock : public QWidget {
 	Segmented *canvasSeg = new Segmented;
 	QStringList canvasNames; // per canvas button, empty = main
 	QLineEdit *search = new QLineEdit;
-	QLabel *hint = new QLabel, *title = new QLabel, *status = new QLabel;
+	QLabel *hint = new QLabel, *title = new QLabel, *status = new QLabel, *sourcesCap = new QLabel("SOURCES");
 	Preview *preview = new Preview;
 	QComboBox *safe = safeZoneBox();
 	QSlider *gap = nullptr, *margin = nullptr, *pct = nullptr;
@@ -969,7 +998,7 @@ class GriddyDock : public QWidget {
 	}
 	void setStatus(const QString &text, bool ok = false)
 	{
-		status->setStyleSheet(ok ? "color: #3fc1a5" : "");
+		status->setStyleSheet(ok ? "font-size: 12px; color: #3fc1a5;" : "font-size: 12px;");
 		status->setText(text);
 	}
 	// Keeps the selection banner and the Apply button in step with OBS.
@@ -989,8 +1018,10 @@ class GriddyDock : public QWidget {
 					.arg(n)
 					.arg(n > 1 ? "s" : "")
 			  : "<b>No sources selected in OBS.</b> Pick a source for each slot below and press Apply.");
-		hint->setStyleSheet(QString("QLabel { border: 1px solid %1; border-radius: 6px; padding: 6px; }")
-					    .arg(n ? "palette(highlight)" : "palette(mid)"));
+		hint->setStyleSheet(QString("QLabel { border: 1px solid %1; background: %2; border-radius: 6px; "
+					    "padding: 6px 8px; font-size: 12px; }")
+					    .arg(n ? "palette(highlight)" : "palette(mid)",
+						 n ? "rgba(76, 124, 240, 30)" : "transparent"));
 	}
 
 public:
@@ -1000,7 +1031,7 @@ public:
 		list->setResizeMode(QListView::Adjust);
 		list->setMovement(QListView::Static);
 		list->setWordWrap(true);
-		list->setSpacing(2);
+		list->setSpacing(3);
 		list->setMinimumHeight(110);
 		hint->setWordWrap(true);
 		status->setWordWrap(true);
@@ -1008,36 +1039,51 @@ public:
 		search->setClearButtonEnabled(true);
 		canvasSeg->setToolTip("Canvas to arrange, e.g. a Vertical Canvas. Only matching layouts are listed.");
 		safeFit->setToolTip("Keep slots out of the area covered by the app's UI");
-		QFont bold = title->font();
-		bold.setBold(true);
-		title->setFont(bold);
+		title->setStyleSheet("font-size: 14px; font-weight: 600;");
+		status->setStyleSheet("font-size: 12px;");
+		caption(sourcesCap);
+		// One control height across the dock; the primary action row is a step taller.
+		for (QWidget *w : std::initializer_list<QWidget *>{canvasSeg, search, safe, lock, mirror})
+			w->setFixedHeight(28);
+		for (auto *b : {lock, mirror})
+			b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
 		auto *refresh = new QToolButton, *editBtn = new QToolButton, *rotate = new QToolButton,
 		     *adjust = new QToolButton;
 		refresh->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
 		refresh->setToolTip("Reload the canvases and the scene's sources");
+		refresh->setFixedSize(28, 28);
 		editBtn->setText("Edit Layout…");
 		editBtn->setAutoRaise(true);
 		rotate->setText("Rotate");
 		rotate->setToolTip("Move each source to the next slot and apply");
+		rotate->setFixedHeight(32);
+		rotate->setMinimumWidth(72);
+		apply->setFixedHeight(32);
 		apply->setToolTip("Arrange the chosen sources into the layout");
 		apply->setStyleSheet("QPushButton { background: palette(highlight); color: palette(highlighted-text); "
-				     "font-weight: bold; padding: 6px; border-radius: 4px; }");
-		adjust->setText("Adjust this layout");
+				     "font-weight: bold; padding: 0 12px; border-radius: 4px; }");
+		adjust->setText("ADJUST THIS LAYOUT");
+		caption(adjust);
 		adjust->setCheckable(true);
 		adjust->setAutoRaise(true);
 		adjust->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
 		params->setContentsMargins({});
+		params->setSpacing(8);
+		params->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+		slotForm->setHorizontalSpacing(8);
+		slotForm->setVerticalSpacing(6);
+		slotForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 		params->addRow("Gap", sliderRow(gap, 0, 400, " px"));
 		params->addRow("Margin", sliderRow(margin, 0, 800, " px"));
 		params->addRow("Main size", pctRow = sliderRow(pct, 5, 95, " %"));
 		auto *toggles = new QHBoxLayout;
 		toggles->addWidget(lock);
 		toggles->addWidget(mirror);
-		toggles->addStretch();
-		params->addRow(toggles);
+		params->addRow("", toggles);
 		auto *safeRow = new QHBoxLayout;
+		safeRow->setSpacing(8);
 		safeRow->addWidget(safe, 1);
 		safeRow->addWidget(safeFit);
 		params->addRow("Safe zone", safeRow);
@@ -1050,28 +1096,52 @@ public:
 		auto *card = new QFrame;
 		card->setFrameShape(QFrame::StyledPanel);
 		card->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+		auto *line = new QFrame;
+		line->setFrameShape(QFrame::HLine);
+		line->setFrameShadow(QFrame::Plain);
+		line->setStyleSheet("color: palette(mid);");
+		auto *sources = new QVBoxLayout;
+		sources->setSpacing(6);
+		sources->addWidget(sourcesCap);
+		sources->addLayout(slotForm);
+		auto *adjustBox = new QVBoxLayout;
+		adjustBox->setSpacing(8);
+		adjustBox->addWidget(adjust);
+		adjustBox->addWidget(settings);
 		auto *cl = new QVBoxLayout(card);
+		cl->setContentsMargins(10, 10, 10, 10);
+		cl->setSpacing(12);
 		cl->addLayout(head);
 		cl->addWidget(preview);
-		cl->addLayout(slotForm);
-		cl->addWidget(adjust);
-		cl->addWidget(settings);
+		cl->addLayout(sources);
+		cl->addWidget(line);
+		cl->addLayout(adjustBox);
 
 		auto *searchRow = new QHBoxLayout;
+		searchRow->setSpacing(8);
 		searchRow->addWidget(search, 1);
 		searchRow->addWidget(refresh);
+		auto *gallery = new QVBoxLayout;
+		gallery->setSpacing(8);
+		gallery->addLayout(searchRow);
+		gallery->addWidget(list, 1);
 		auto *actions = new QHBoxLayout;
+		actions->setSpacing(8);
 		actions->addWidget(apply, 1);
 		actions->addWidget(rotate);
+		auto *footer = new QVBoxLayout;
+		footer->setSpacing(6);
+		footer->addLayout(actions);
+		footer->addWidget(status);
 
 		auto *root = new QVBoxLayout(this);
+		root->setContentsMargins(8, 8, 8, 8);
+		root->setSpacing(12);
 		root->addWidget(canvasSeg);
 		root->addWidget(hint);
-		root->addLayout(searchRow);
-		root->addWidget(list, 1);
+		root->addLayout(gallery, 1);
 		root->addWidget(card);
-		root->addLayout(actions);
-		root->addWidget(status);
+		root->addLayout(footer);
 
 		connect(adjust, &QToolButton::toggled, this, [adjust, settings](bool on) {
 			settings->setVisible(on);
@@ -1200,23 +1270,27 @@ public:
 			slotForm->removeRow(0);
 		pickers.clear();
 		const Layout *L = cur();
+		auto sorted = items;
+		std::sort(sorted.begin(), sorted.end(), [](auto &a, auto &b) { return naturalLess(a.name, b.name); });
 		for (int i = 0; L && i < L->slots.size(); i++) {
 			auto *badge = new QLabel(QString::number(i + 1));
 			badge->setAlignment(Qt::AlignCenter);
-			badge->setFixedSize(22, 22);
+			badge->setFixedSize(20, 20);
 			badge->setToolTip(i ? QString("Slot %1").arg(i + 1) : "Slot 1 (main)");
 			badge->setStyleSheet(
-				QString("background: %1; color: #111; border-radius: 4px; font-weight: bold;")
+				QString("background: %1; color: #111; border-radius: 4px; font-size: 11px; font-weight: bold;")
 					.arg(kColors[i % 6].name()));
 			auto *c = new QComboBox;
+			c->setFixedHeight(28);
 			c->addItem("(none)", qint64(-1));
-			for (const auto &it : items)
+			for (const auto &it : sorted)
 				c->addItem(it.name, qint64(it.id));
 			c->setCurrentIndex(std::max(0, c->findData(i < want.size() ? want[i] : -1)));
 			connect(c, &QComboBox::currentIndexChanged, this, [this] { updateNames(); });
 			slotForm->addRow(badge, c);
 			pickers += c;
 		}
+		sourcesCap->setVisible(!pickers.isEmpty());
 		updateNames();
 	}
 	void updateNames()
