@@ -396,6 +396,18 @@ static QToolButton *toggle(const QString &text, const QString &tip)
 	return b;
 }
 
+// Natural order, case-insensitive: "Cam 2" before "Cam 10".
+static bool naturalLess(const QString &a, const QString &b)
+{
+	static const QCollator c = [] {
+		QCollator c;
+		c.setNumericMode(true);
+		c.setCaseSensitivity(Qt::CaseInsensitive);
+		return c;
+	}();
+	return c.compare(a, b) < 0;
+}
+
 static QComboBox *safeZoneBox()
 {
 	auto *c = new QComboBox;
@@ -564,10 +576,13 @@ class EditorDialog : public QDialog {
 		layoutTab->setEnabled(L);
 		if (L) {
 			name->setText(L->name);
-			group->clear();
+			QStringList groups;
 			for (const auto &x : layouts())
-				if (group->findText(x.group) < 0)
-					group->addItem(x.group);
+				if (!groups.contains(x.group))
+					groups += x.group;
+			std::sort(groups.begin(), groups.end(), naturalLess);
+			group->clear();
+			group->addItems(groups);
 			group->setCurrentText(L->group);
 			mode->setIndex(L->grid ? 0 : 1);
 			orient->setIndex(L->orient);
@@ -1200,6 +1215,8 @@ public:
 			slotForm->removeRow(0);
 		pickers.clear();
 		const Layout *L = cur();
+		auto sorted = items;
+		std::sort(sorted.begin(), sorted.end(), [](auto &a, auto &b) { return naturalLess(a.name, b.name); });
 		for (int i = 0; L && i < L->slots.size(); i++) {
 			auto *badge = new QLabel(QString::number(i + 1));
 			badge->setAlignment(Qt::AlignCenter);
@@ -1210,7 +1227,7 @@ public:
 					.arg(kColors[i % 6].name()));
 			auto *c = new QComboBox;
 			c->addItem("(none)", qint64(-1));
-			for (const auto &it : items)
+			for (const auto &it : sorted)
 				c->addItem(it.name, qint64(it.id));
 			c->setCurrentIndex(std::max(0, c->findData(i < want.size() ? want[i] : -1)));
 			connect(c, &QComboBox::currentIndexChanged, this, [this] { updateNames(); });
