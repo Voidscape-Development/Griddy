@@ -428,6 +428,8 @@ static QComboBox *safeZoneBox()
 	for (const auto &z : kSafeZones)
 		c->addItem(z.name);
 	c->setToolTip("Shade the area covered by the app's buttons and captions (approximate)");
+	c->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+	c->setMinimumContentsLength(6);
 	return c;
 }
 
