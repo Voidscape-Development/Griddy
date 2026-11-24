@@ -659,7 +659,8 @@ public:
 		resize(1180, 660);
 		list->setIconSize(QSize(64, 64));
 		group->setEditable(true);
-		group->setToolTip("Section the layout is listed under in the dock");
+		group->setToolTip("Section the layout is listed under in the dock. Type a name to make a new one.");
+		group->lineEdit()->setPlaceholderText("Pick or type a group");
 		orient->setToolTip("The Griddy dock only lists layouts that match the target canvas");
 		for (const auto &[n, a] : kAspects)
 			aspect->addItem(n, a);
@@ -717,7 +718,42 @@ public:
 		toggles->addWidget(mirror);
 		toggles->addStretch();
 		auto *lf = new QFormLayout(layoutTab);
-		lf->addRow("Group", group);
+		// Groups are just labels on layouts: "New…" moves this layout into a new group, Rename renames it for all.
+		auto *groupBtn = new QToolButton;
+		auto *groupRow = new QWidget;
+		groupBtn->setText("New…");
+		groupBtn->setToolTip("Move this layout into a new group");
+		groupBtn->setPopupMode(QToolButton::MenuButtonPopup);
+		groupBtn->setMenu(new QMenu(groupBtn));
+		auto *rename = groupBtn->menu()->addAction("Rename group…");
+		auto *gl = new QHBoxLayout(groupRow);
+		gl->setContentsMargins({});
+		gl->addWidget(group, 1);
+		gl->addWidget(groupBtn);
+		lf->addRow("Group", groupRow);
+		auto askGroup = [this](const QString &title, const QString &text) {
+			bool ok = false;
+			const QString g =
+				QInputDialog::getText(this, title, "Group name:", QLineEdit::Normal, text, &ok)
+					.trimmed();
+			return ok ? g : QString();
+		};
+		connect(groupBtn, &QToolButton::clicked, this, [this, askGroup] {
+			const QString g = askGroup("New Group", "");
+			if (Layout *L = cur(); L && !g.isEmpty() && g != L->group) {
+				L->group = g;
+				reload(list->current());
+			}
+		});
+		connect(rename, &QAction::triggered, this, [this, askGroup] {
+			const QString old = cur() ? cur()->group : QString(), g = askGroup("Rename Group", old);
+			if (g.isEmpty() || g == old)
+				return;
+			for (auto &x : layouts())
+				if (x.group == old)
+					x.group = g; // renaming to an existing group merges them
+			reload(list->current());
+		});
 		lf->addRow("Column widths", cols);
 		lf->addRow("Row heights", rows);
 		lf->addRow("Gap", sliderRow(gap, 0, 400, " px"));

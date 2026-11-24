@@ -22,7 +22,7 @@ One-click source layouts for OBS Studio. Podcasts, eSports, and custom grids are
   - *Portrait canvas:* Vertical: Game + Cam, Game + 2 Cams, Cropped Game + Cam, Three Stacked, Top / Bottom Split, Cam + Game PiP
 - **Layout editor** (Tools → Griddy Layout Editor, or **Edit Layout…** in the dock):
   - Toolbar for the name, Grid/Free mode and orientation. **Layout** and **Slot** tabs on the right; clicking a slot opens its tab.
-  - **Group:** the gallery section a layout is listed under. Type a new name to make a new section.
+  - **Group:** the gallery section a layout is listed under. Pick one, type a new name, or press **New…** to move the layout into a new group. The button's arrow has **Rename group…**, which renames it for every layout in it (renaming to an existing group merges the two).
   - **Grid mode:** set column and row weights (e.g. `2, 1`). Click a cell to add a slot, or drag across cells to merge them into one slot.
   - **Free mode:** draw slots anywhere, drag to move them, and drag a corner to resize. Snaps to a 1/48 grid.
   - **Orientation:** Any, Landscape or Portrait. This decides which canvases the layout is listed for.
