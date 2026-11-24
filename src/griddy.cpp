@@ -468,6 +468,7 @@ class LayoutList : public QListWidget {
 public:
 	QString filter;
 	std::function<bool(const Layout &)> show; // extra filter, e.g. the canvas orientation
+	QSizeF aspect;                            // icon mode: canvas aspect of the tile thumbnails
 
 	int layoutAt(const QListWidgetItem *it) const
 	{
@@ -499,8 +500,7 @@ public:
 					continue;
 				auto *it = new QListWidgetItem(layoutIcon(L), L.name, this);
 				it->setData(Qt::UserRole, i);
-				if (viewMode() == IconMode)
-					it->setSizeHint(iconSize() + QSize(12, 2 * fontMetrics().height() + 10));
+				it->setToolTip(L.name);
 				if (!pick || i == sel)
 					pick = it;
 				any = true;
@@ -508,7 +508,7 @@ public:
 			if (!any)
 				delete h;
 		}
-		fitHeaders();
+		fitTiles();
 		setCurrentItem(pick);
 	}
 
@@ -516,16 +516,25 @@ protected:
 	void resizeEvent(QResizeEvent *e) override
 	{
 		QListWidget::resizeEvent(e);
-		fitHeaders();
+		fitTiles();
 	}
 
 private:
-	void fitHeaders() // headers span a whole row of the icon grid
+	// Icon mode: tiles stretch so each row is filled edge to edge, with as many columns as fit;
+	// headers span a whole row. Room for the scroll bar is kept so it can't reflow the grid.
+	void fitTiles()
 	{
-		for (int i = 0; viewMode() == IconMode && i < count(); i++)
-			if (layoutAt(item(i)) < 0)
-				item(i)->setSizeHint(
-					QSize(viewport()->width() - 2 * spacing() - 2, fontMetrics().height() + 10));
+		if (viewMode() != IconMode || aspect.isEmpty())
+			return;
+		const int s = spacing(), fh = fontMetrics().height(),
+			  w = viewport()->width() - s -
+			      (verticalScrollBar()->isVisible() ? 0 : style()->pixelMetric(QStyle::PM_ScrollBarExtent));
+		const int cols = std::max(1, w / ((aspect.width() >= aspect.height() ? 84 : 60) + s));
+		const int tw = std::max(40, w / cols - s - 1);
+		setIconSize(aspect.scaled(tw - 8, tw - 8, Qt::KeepAspectRatio).toSize());
+		for (int i = 0; i < count(); i++)
+			item(i)->setSizeHint(layoutAt(item(i)) < 0 ? QSize(w - s - 1, fh + 8)
+								   : QSize(tw, iconSize().height() + fh + 10));
 	}
 };
 
@@ -924,7 +933,7 @@ public:
 	int heightForWidth(int w) const override
 	{
 		const QSizeF c = layout() ? layoutSize(*layout()) : QSizeF(16, 9);
-		return std::min(int(w * c.height() / c.width()), 240);
+		return std::min(int(w * c.height() / c.width()), 200);
 	}
 	QSize sizeHint() const override { return {240, heightForWidth(240)}; }
 
@@ -943,17 +952,19 @@ protected:
 
 class GriddyDock : public QWidget {
 	LayoutList *list = new LayoutList;
-	Segmented *canvasSeg = new Segmented;
-	QStringList canvasNames; // per canvas button, empty = main
+	QComboBox *canvasBox = new QComboBox;
+	QStringList canvasNames; // per canvas entry, empty = main
 	QLineEdit *search = new QLineEdit;
-	QLabel *hint = new QLabel, *title = new QLabel, *status = new QLabel, *sourcesCap = new QLabel("SOURCES");
+	QLabel *title = new QLabel, *status = new QLabel;
+	QString titleText, applyText; // full texts; the widgets show them elided
 	Preview *preview = new Preview;
 	QComboBox *safe = safeZoneBox();
 	QSlider *gap = nullptr, *margin = nullptr, *pct = nullptr;
-	QToolButton *lock = toggle("Aspect lock", "Keep each source's aspect ratio; the group is centered"),
+	QToolButton *lock = toggle("Lock", "Aspect lock: keep each source's aspect ratio; the group is centered"),
 		    *mirror = toggle("Mirror", "Flip the layout left/right");
 	QCheckBox *safeFit = new QCheckBox("Keep inside");
 	QFormLayout *slotForm = new QFormLayout, *params = new QFormLayout;
+	QBoxLayout *body = new QBoxLayout(QBoxLayout::TopToBottom); // preview + slots, side by side when wide
 	QWidget *pctRow = nullptr;
 	QPushButton *apply = new QPushButton("Apply");
 	QVector<QComboBox *> pickers;
@@ -980,7 +991,9 @@ class GriddyDock : public QWidget {
 	{
 		Layout *L = cur();
 		loading = true;
-		title->setText(L ? L->name : "No layout for this canvas");
+		titleText = L ? L->name : "No layout for this canvas";
+		title->setToolTip(titleText);
+		elide();
 		preview->index = list->current();
 		preview->updateGeometry();
 		preview->update();
@@ -996,159 +1009,163 @@ class GriddyDock : public QWidget {
 		}
 		loading = false;
 	}
-	void setStatus(const QString &text, bool ok = false)
+	void elide()
 	{
-		status->setStyleSheet(ok ? "font-size: 12px; color: #3fc1a5;" : "font-size: 12px;");
+		title->setText(title->fontMetrics().elidedText(titleText, Qt::ElideRight, title->width()));
+		apply->setText(apply->fontMetrics().elidedText(applyText, Qt::ElideMiddle, apply->width() - 24));
+	}
+	void setStatus(const QString &text, const char *color = "palette(window-text)")
+	{
+		status->setStyleSheet(QString("font-size: 12px; color: %1;").arg(color));
 		status->setText(text);
 	}
-	// Keeps the selection banner and the Apply button in step with OBS.
+	// Keeps the status line and the Apply button in step with the OBS selection and scene.
 	void updateHint()
 	{
 		obs_source_t *src = targetScene();
-		apply->setText(src ? QString("Apply to “%1”").arg(obs_source_get_name(src)) : "Apply");
+		applyText = src ? QString("Apply to “%1”").arg(obs_source_get_name(src)) : "Apply";
+		apply->setToolTip(applyText + ": arrange the chosen sources into the layout");
 		obs_source_release(src);
+		elide();
 		const auto items = sceneItems();
 		const int n = int(std::count_if(items.begin(), items.end(), [](auto &i) { return i.selected; }));
 		if (n == selCount)
 			return;
 		selCount = n;
-		hint->setText(
-			n ? QString("<b>%1 source%2 selected in OBS.</b> Click a layout to place them in order, top "
-				    "of the Sources list first.")
-					.arg(n)
-					.arg(n > 1 ? "s" : "")
-			  : "<b>No sources selected in OBS.</b> Pick a source for each slot below and press Apply.");
-		hint->setStyleSheet(QString("QLabel { border: 1px solid %1; background: %2; border-radius: 6px; "
-					    "padding: 6px 8px; font-size: 12px; }")
-					    .arg(n ? "palette(highlight)" : "palette(mid)",
-						 n ? "rgba(76, 124, 240, 30)" : "transparent"));
+		if (n)
+			setStatus(QString("<b>%1 selected</b> · click a layout to place them, top of Sources first")
+					  .arg(n),
+				  "palette(highlight)");
+		else
+			setStatus("<b>Nothing selected</b> · pick a source per slot, then Apply");
 	}
 
 public:
 	GriddyDock()
 	{
+		auto *cfg = obs_frontend_get_user_config();
 		list->setViewMode(QListView::IconMode);
 		list->setResizeMode(QListView::Adjust);
 		list->setMovement(QListView::Static);
-		list->setWordWrap(true);
 		list->setSpacing(3);
-		list->setMinimumHeight(110);
-		hint->setWordWrap(true);
+		list->setMinimumHeight(64);
 		status->setWordWrap(true);
 		search->setPlaceholderText("Search layouts");
 		search->setClearButtonEnabled(true);
-		canvasSeg->setToolTip("Canvas to arrange, e.g. a Vertical Canvas. Only matching layouts are listed.");
+		canvasBox->setToolTip("Canvas to arrange, e.g. a Vertical Canvas. Only matching layouts are listed.");
+		canvasBox->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+		canvasBox->setMinimumContentsLength(8);
 		safeFit->setToolTip("Keep slots out of the area covered by the app's UI");
-		title->setStyleSheet("font-size: 14px; font-weight: 600;");
-		status->setStyleSheet("font-size: 12px;");
-		caption(sourcesCap);
-		// One control height across the dock; the primary action row is a step taller.
-		for (QWidget *w : std::initializer_list<QWidget *>{canvasSeg, search, safe, lock, mirror})
-			w->setFixedHeight(28);
-		for (auto *b : {lock, mirror})
-			b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		title->setStyleSheet("font-size: 13px; font-weight: 600;");
+		title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+		apply->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+		apply->setMinimumWidth(64);
+		apply->setStyleSheet("QPushButton { background: palette(highlight); color: palette(highlighted-text); "
+				     "font-weight: bold; padding: 0 12px; border-radius: 4px; }");
 
 		auto *refresh = new QToolButton, *editBtn = new QToolButton, *rotate = new QToolButton,
 		     *adjust = new QToolButton;
 		refresh->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
 		refresh->setToolTip("Reload the canvases and the scene's sources");
-		refresh->setFixedSize(28, 28);
-		editBtn->setText("Edit Layout…");
+		editBtn->setText("Edit…");
+		editBtn->setToolTip("Open this layout in the Layout Editor");
 		editBtn->setAutoRaise(true);
 		rotate->setText("Rotate");
 		rotate->setToolTip("Move each source to the next slot and apply");
-		rotate->setFixedHeight(32);
-		rotate->setMinimumWidth(72);
-		apply->setFixedHeight(32);
-		apply->setToolTip("Arrange the chosen sources into the layout");
-		apply->setStyleSheet("QPushButton { background: palette(highlight); color: palette(highlighted-text); "
-				     "font-weight: bold; padding: 0 12px; border-radius: 4px; }");
-		adjust->setText("ADJUST THIS LAYOUT");
+		adjust->setText("ADJUST");
 		caption(adjust);
 		adjust->setCheckable(true);
 		adjust->setAutoRaise(true);
 		adjust->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+		// One control height across the dock.
+		for (QWidget *w : std::initializer_list<QWidget *>{canvasBox, search, refresh, safe, lock, mirror,
+								   editBtn, rotate, apply})
+			w->setFixedHeight(28);
+		refresh->setFixedWidth(28);
 
 		params->setContentsMargins({});
-		params->setSpacing(8);
+		params->setSpacing(6);
 		params->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-		slotForm->setHorizontalSpacing(8);
-		slotForm->setVerticalSpacing(6);
+		slotForm->setHorizontalSpacing(6);
+		slotForm->setVerticalSpacing(4);
 		slotForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 		params->addRow("Gap", sliderRow(gap, 0, 400, " px"));
 		params->addRow("Margin", sliderRow(margin, 0, 800, " px"));
 		params->addRow("Main size", pctRow = sliderRow(pct, 5, 95, " %"));
-		auto *toggles = new QHBoxLayout;
-		toggles->addWidget(lock);
-		toggles->addWidget(mirror);
-		params->addRow("", toggles);
 		auto *safeRow = new QHBoxLayout;
-		safeRow->setSpacing(8);
+		safeRow->setSpacing(6);
 		safeRow->addWidget(safe, 1);
 		safeRow->addWidget(safeFit);
 		params->addRow("Safe zone", safeRow);
 		auto *settings = new QWidget;
 		settings->setLayout(params);
 
+		// Toolbar: canvas (only with extra canvases), search, refresh.
+		auto *top = new QHBoxLayout;
+		top->setSpacing(6);
+		top->addWidget(canvasBox);
+		top->addWidget(search, 1);
+		top->addWidget(refresh);
+
+		// Details: header with the quick toggles, preview + slot pickers, collapsible adjust section.
 		auto *head = new QHBoxLayout;
+		head->setSpacing(4);
 		head->addWidget(title, 1);
+		head->addWidget(lock);
+		head->addWidget(mirror);
 		head->addWidget(editBtn);
-		auto *card = new QFrame;
-		card->setFrameShape(QFrame::StyledPanel);
-		card->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+		body->setSpacing(8);
+		body->addWidget(preview, 1, Qt::AlignTop);
+		body->addLayout(slotForm, 1);
 		auto *line = new QFrame;
 		line->setFrameShape(QFrame::HLine);
 		line->setFrameShadow(QFrame::Plain);
 		line->setStyleSheet("color: palette(mid);");
-		auto *sources = new QVBoxLayout;
-		sources->setSpacing(6);
-		sources->addWidget(sourcesCap);
-		sources->addLayout(slotForm);
-		auto *adjustBox = new QVBoxLayout;
-		adjustBox->setSpacing(8);
-		adjustBox->addWidget(adjust);
-		adjustBox->addWidget(settings);
-		auto *cl = new QVBoxLayout(card);
-		cl->setContentsMargins(10, 10, 10, 10);
-		cl->setSpacing(12);
-		cl->addLayout(head);
-		cl->addWidget(preview);
-		cl->addLayout(sources);
-		cl->addWidget(line);
-		cl->addLayout(adjustBox);
+		auto *details = new QWidget;
+		auto *dl = new QVBoxLayout(details);
+		dl->setContentsMargins(8, 8, 8, 8);
+		dl->setSpacing(8);
+		dl->addLayout(head);
+		dl->addLayout(body);
+		dl->addWidget(line);
+		dl->addWidget(adjust);
+		dl->addWidget(settings);
+		dl->addStretch();
+		auto *scroll = new QScrollArea;
+		scroll->setWidget(details);
+		scroll->setWidgetResizable(true);
+		scroll->setMinimumHeight(64);
 
-		auto *searchRow = new QHBoxLayout;
-		searchRow->setSpacing(8);
-		searchRow->addWidget(search, 1);
-		searchRow->addWidget(refresh);
-		auto *gallery = new QVBoxLayout;
-		gallery->setSpacing(8);
-		gallery->addLayout(searchRow);
-		gallery->addWidget(list, 1);
+		// Gallery and details share the height through a splitter, so the dock fits any size.
+		auto *split = new QSplitter(Qt::Vertical);
+		split->addWidget(list);
+		split->addWidget(scroll);
+		split->setChildrenCollapsible(false);
+		split->setSizes({240, 360});
+		split->restoreState(QByteArray::fromBase64(config_get_string(cfg, "Griddy", "Split")));
+
 		auto *actions = new QHBoxLayout;
-		actions->setSpacing(8);
+		actions->setSpacing(6);
 		actions->addWidget(apply, 1);
 		actions->addWidget(rotate);
-		auto *footer = new QVBoxLayout;
-		footer->setSpacing(6);
-		footer->addLayout(actions);
-		footer->addWidget(status);
 
 		auto *root = new QVBoxLayout(this);
-		root->setContentsMargins(8, 8, 8, 8);
-		root->setSpacing(12);
-		root->addWidget(canvasSeg);
-		root->addWidget(hint);
-		root->addLayout(gallery, 1);
-		root->addWidget(card);
-		root->addLayout(footer);
+		root->setContentsMargins(6, 6, 6, 6);
+		root->setSpacing(6);
+		root->addLayout(top);
+		root->addWidget(split, 1);
+		root->addLayout(actions);
+		root->addWidget(status);
 
-		connect(adjust, &QToolButton::toggled, this, [adjust, settings](bool on) {
+		connect(split, &QSplitter::splitterMoved, this, [split, cfg] {
+			config_set_string(cfg, "Griddy", "Split", split->saveState().toBase64().constData());
+		});
+		connect(adjust, &QToolButton::toggled, this, [adjust, settings, cfg](bool on) {
 			settings->setVisible(on);
 			adjust->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
-			config_set_bool(obs_frontend_get_user_config(), "Griddy", "AdjustHidden", !on);
+			config_set_bool(cfg, "Griddy", "AdjustHidden", !on);
 		});
-		adjust->setChecked(!config_get_bool(obs_frontend_get_user_config(), "Griddy", "AdjustHidden"));
+		adjust->setChecked(!config_get_bool(cfg, "Griddy", "AdjustHidden"));
 		Q_EMIT adjust->toggled(adjust->isChecked());
 
 		connect(list, &QListWidget::currentItemChanged, this, [this] {
@@ -1182,7 +1199,7 @@ public:
 			edit([this](Layout &L) { L.safeZone = safe->currentIndex(); }));
 		connect(safeFit, &QCheckBox::toggled, this,
 			edit([this](Layout &L) { L.safeFit = safeFit->isChecked(); }));
-		connect(&canvasSeg->group, &QButtonGroup::idClicked, this, [this](int i) {
+		connect(canvasBox, &QComboBox::activated, this, [this](int i) {
 			g_canvasName = canvasNames.value(i);
 			config_set_string(obs_frontend_get_user_config(), "Griddy", "Canvas",
 					  g_canvasName.toUtf8().constData());
@@ -1236,8 +1253,10 @@ public:
 			const QSizeF c = canvasSize(n);
 			labels += QString("%1  %2×%3").arg(n.isEmpty() ? "Main" : n).arg(c.width()).arg(c.height());
 		}
-		canvasSeg->setItems(labels);
-		canvasSeg->setIndex(std::max(0, int(canvasNames.indexOf(g_canvasName))));
+		canvasBox->clear();
+		canvasBox->addItems(labels);
+		canvasBox->setCurrentIndex(std::max(0, int(canvasNames.indexOf(g_canvasName))));
+		canvasBox->setVisible(canvasNames.size() > 1);
 		refreshList();
 	}
 
@@ -1245,7 +1264,7 @@ public:
 	void refreshList()
 	{
 		const QSizeF c = canvasSize();
-		list->setIconSize(c.scaled(96, 96, Qt::KeepAspectRatio).toSize());
+		list->aspect = c;
 		list->show = [c](const Layout &L) {
 			return L.fits(c.width(), c.height());
 		};
@@ -1282,6 +1301,9 @@ public:
 					.arg(kColors[i % 6].name()));
 			auto *c = new QComboBox;
 			c->setFixedHeight(28);
+			c->setSizeAdjustPolicy(
+				QComboBox::AdjustToMinimumContentsLengthWithIcon); // long names don't widen the dock
+			c->setMinimumContentsLength(6);
 			c->addItem("(none)", qint64(-1));
 			for (const auto &it : sorted)
 				c->addItem(it.name, qint64(it.id));
@@ -1290,7 +1312,6 @@ public:
 			slotForm->addRow(badge, c);
 			pickers += c;
 		}
-		sourcesCap->setVisible(!pickers.isEmpty());
 		updateNames();
 	}
 	void updateNames()
@@ -1347,8 +1368,16 @@ public:
 					  .arg(L->slots.size())
 					  .arg(obs_source_get_name(src))
 			    : "Nothing applied. Pick a source for at least one slot.",
-			  n > 0);
+			  n ? "#3fc1a5" : "palette(window-text)");
 		obs_source_release(src);
+	}
+
+protected:
+	void resizeEvent(QResizeEvent *e) override
+	{
+		QWidget::resizeEvent(e);
+		body->setDirection(width() >= 460 ? QBoxLayout::LeftToRight : QBoxLayout::TopToBottom);
+		elide();
 	}
 };
 

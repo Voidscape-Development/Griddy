@@ -5,14 +5,15 @@ One-click source layouts for OBS Studio. Podcasts, eSports, and custom grids are
 ## Features
 
 - **Griddy dock** (Docks → Griddy):
-  - **Canvas:** switch between Main and extra canvases such as [Vertical Canvas](https://aitum.tv/products/vertical) (OBS 31.1+), each shown with its resolution. Only layouts matching the canvas orientation are listed.
-  - **Selection banner:** shows how many sources are selected in OBS, so you know what a click will do.
+  - **Compact, responsive layout:** the gallery and the layout details share the dock through a draggable divider (remembered), the details scroll when space is short, gallery tiles resize to fill each row, and the preview sits beside the slot pickers when the dock is wide.
+  - **Canvas:** a dropdown next to the search box switches between Main and extra canvases such as [Vertical Canvas](https://aitum.tv/products/vertical) (OBS 31.1+), each shown with its resolution. It only appears when an extra canvas exists. Only layouts matching the canvas orientation are listed.
+  - **Status line:** under **Apply**, shows how many sources are selected in OBS (so you know what a click will do) and the result of the last apply.
   - **Gallery:** layouts are grouped (Podcast, eSports, Overlays, Portrait) and searchable.
   - **One click:** select sources in OBS (top of the Sources list = slot 1), then click a layout.
   - **Pick & apply:** with nothing selected, choose a source for each numbered slot and press **Apply to "Scene"**.
   - **Live preview:** the selected layout is drawn with each slot's source name.
   - **Rotate** moves each source to the next slot. This is handy for swapping who's main.
-  - **Adjust this layout** (collapsible): **Gap**, **Margin** and **Main size** sliders, **Aspect lock**, **Mirror** (flip left/right) and **Safe zone**.
+  - **Lock** (aspect lock) and **Mirror** (flip left/right) sit next to the layout name; **Adjust** (collapsible) holds the **Gap**, **Margin** and **Main size** sliders and **Safe zone**.
   - **Safe zone:** shade the area covered by TikTok, YouTube Shorts or Instagram Reels buttons and captions (approximate), and optionally **Keep inside** it.
 - **Built-in presets:**
   - *Podcast / panels:* Side by Side, Three Across, 2x2 Grid, 3x3 Grid, Interview, Talk Show
